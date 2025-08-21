@@ -4,6 +4,8 @@ use std::io::{stdin, stdout, BufRead, BufReader, BufWriter, Cursor, Write};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 
+use uesave::compression::CompressionFormat;
+use uesave::games::palworld::palworld_types;
 use uesave::{Save, SaveReader, StructType, Types};
 
 #[derive(Parser, Debug)]
@@ -28,6 +30,10 @@ struct ActionToJson {
     ///   -t .EnemiesKilled.Value=Struct
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
+
+    /// Enable Palworld custom property support
+    #[arg(long)]
+    palworld: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -37,6 +43,10 @@ struct ActionFromJson {
 
     #[arg(short, long, default_value = "-")]
     output: String,
+
+    /// Enable Oodle compression (PLM format) for output
+    #[arg(long)]
+    compress_oodle: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -117,7 +127,13 @@ pub fn main() -> Result<()> {
 
     match args.action {
         Action::ToJson(action) => {
-            let mut types = Types::new();
+            let start_time = Some(std::time::Instant::now());
+            let mut types = if action.palworld {
+                palworld_types()
+            } else {
+                Types::new()
+            };
+
             for (path, t) in action.r#type {
                 types.add(path, t);
             }
@@ -126,11 +142,30 @@ pub fn main() -> Result<()> {
                 .log(!action.no_warn)
                 .types(&types)
                 .read(input(&action.input)?)?;
+            println!(
+                "Gvas read in: {:?}",
+                start_time.map(|t| t.elapsed()).unwrap_or_default()
+            );
+            let serialize_start_time = Some(std::time::Instant::now());
             serde_json::to_writer_pretty(output(&action.output)?, &save)?;
+            println!(
+                "De-serialization completed in: {:?}",
+                serialize_start_time
+                    .map(|t| t.elapsed())
+                    .unwrap_or_default()
+            );
+            println!(
+                "Conversion completed in: {:?}",
+                start_time.map(|t| t.elapsed()).unwrap_or_default()
+            );
         }
         Action::FromJson(io) => {
             let save: Save = serde_json::from_reader(&mut input(&io.input)?)?;
-            save.write(&mut output(&io.output)?)?;
+            if io.compress_oodle {
+                save.write_compressed(&mut output(&io.output)?, CompressionFormat::Oodle)?;
+            } else {
+                save.write(&mut output(&io.output)?)?;
+            }
         }
         Action::TestResave(action) => {
             let mut types = Types::new();

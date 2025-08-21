@@ -27,7 +27,10 @@ match save.root.properties["NumberOfGamesPlayed"] {
 ```
 */
 
+pub mod compression;
 mod error;
+pub mod games;
+pub use games::palworld::*;
 
 #[cfg(test)]
 mod tests;
@@ -287,11 +290,22 @@ fn write_properties_none_terminated<W: Write, V: VersionInfo>(
     writer: &mut Context<W, V>,
     properties: &Properties,
 ) -> TResult<()> {
-    for p in properties {
-        write_property(p, writer)?;
+    for (key, prop) in properties.0.iter() {
+        write_property_with_conversion((key, prop), writer)?;
     }
     write_string(writer, "None")?;
     Ok(())
+}
+
+fn write_property_with_conversion<W: Write, V: VersionInfo>(
+    prop: (&PropertyKey, &Property),
+    writer: &mut Context<W, V>,
+) -> TResult<()> {
+    if let Some(converted_prop) = process_property_for_write(writer, prop.0, prop.1)? {
+        return write_property((prop.0, &converted_prop), writer);
+    }
+
+    write_property(prop, writer)
 }
 
 fn read_property<R: Read + Seek, V: VersionInfo>(
@@ -1158,6 +1172,24 @@ pub enum StructType {
     SoftObjectPath,
     GameplayTagContainer,
     UniqueNetIdRepl,
+
+    // Palworld custom struct types
+    PalCharacterData,
+    PalItemContainer,
+    PalGroupData,
+    PalDynamicItem,
+    PalBuildProcess,
+    PalGuildItemStorage,
+    PalGuildLab,
+    PalItemContainerSlots,
+    PalCharacterContainer,
+    PalConnector,
+    PalBaseCamp,
+    PalWork,
+    PalMapModel,
+    PalMapConcreteModel,
+    PalMapConcreteModelModule,
+
     Struct(Option<String>),
 }
 impl From<&str> for StructType {
@@ -1178,6 +1210,21 @@ impl From<&str> for StructType {
             "SoftObjectPath" => StructType::SoftObjectPath,
             "GameplayTagContainer" => StructType::GameplayTagContainer,
             "UniqueNetIdRepl" => StructType::UniqueNetIdRepl,
+            "PalCharacterData" => StructType::PalCharacterData,
+            "PalItemContainer" => StructType::PalItemContainer,
+            "PalGroupData" => StructType::PalGroupData,
+            "PalDynamicItem" => StructType::PalDynamicItem,
+            "PalBuildProcess" => StructType::PalBuildProcess,
+            "PalGuildItemStorage" => StructType::PalGuildItemStorage,
+            "PalGuildLab" => StructType::PalGuildLab,
+            "PalItemContainerSlots" => StructType::PalItemContainerSlots,
+            "PalCharacterContainer" => StructType::PalCharacterContainer,
+            "PalConnector" => StructType::PalConnector,
+            "PalBaseCamp" => StructType::PalBaseCamp,
+            "PalWork" => StructType::PalWork,
+            "PalMapModel" => StructType::PalMapModel,
+            "PalMapConcreteModel" => StructType::PalMapConcreteModel,
+            "PalMapConcreteModelModule" => StructType::PalMapConcreteModelModule,
             "Struct" => StructType::Struct(None),
             _ => StructType::Struct(Some(t.to_owned())),
         }
@@ -1201,6 +1248,21 @@ impl From<String> for StructType {
             "SoftObjectPath" => StructType::SoftObjectPath,
             "GameplayTagContainer" => StructType::GameplayTagContainer,
             "UniqueNetIdRepl" => StructType::UniqueNetIdRepl,
+            "PalCharacterData" => StructType::PalCharacterData,
+            "PalItemContainer" => StructType::PalItemContainer,
+            "PalGroupData" => StructType::PalGroupData,
+            "PalDynamicItem" => StructType::PalDynamicItem,
+            "PalBuildProcess" => StructType::PalBuildProcess,
+            "PalGuildItemStorage" => StructType::PalGuildItemStorage,
+            "PalGuildLab" => StructType::PalGuildLab,
+            "PalItemContainerSlots" => StructType::PalItemContainerSlots,
+            "PalCharacterContainer" => StructType::PalCharacterContainer,
+            "PalConnector" => StructType::PalConnector,
+            "PalBaseCamp" => StructType::PalBaseCamp,
+            "PalWork" => StructType::PalWork,
+            "PalMapModel" => StructType::PalMapModel,
+            "PalMapConcreteModel" => StructType::PalMapConcreteModel,
+            "PalMapConcreteModelModule" => StructType::PalMapConcreteModelModule,
             "Struct" => StructType::Struct(None),
             _ => StructType::Struct(Some(t)),
         }
@@ -1224,6 +1286,21 @@ impl StructType {
             "/Script/CoreUObject.SoftObjectPath" => StructType::SoftObjectPath,
             "/Script/GameplayTags.GameplayTagContainer" => StructType::GameplayTagContainer,
             "/Script/Engine.UniqueNetIdRepl" => StructType::UniqueNetIdRepl,
+            "/Script/Pal.PalCharacterData" => StructType::PalCharacterData,
+            "/Script/Pal.PalItemContainer" => StructType::PalItemContainer,
+            "/Script/Pal.PalGroupData" => StructType::PalGroupData,
+            "/Script/Pal.PalDynamicItem" => StructType::PalDynamicItem,
+            "/Script/Pal.PalBuildProcess" => StructType::PalBuildProcess,
+            "/Script/Pal.PalGuildItemStorage" => StructType::PalGuildItemStorage,
+            "/Script/Pal.PalGuildLab" => StructType::PalGuildLab,
+            "/Script/Pal.PalItemContainerSlots" => StructType::PalItemContainerSlots,
+            "/Script/Pal.PalCharacterContainer" => StructType::PalCharacterContainer,
+            "/Script/Pal.PalConnector" => StructType::PalConnector,
+            "/Script/Pal.PalBaseCamp" => StructType::PalBaseCamp,
+            "/Script/Pal.PalWork" => StructType::PalWork,
+            "/Script/Pal.PalMapModel" => StructType::PalMapModel,
+            "/Script/Pal.PalMapConcreteModel" => StructType::PalMapConcreteModel,
+            "/Script/Pal.PalMapConcreteModelModule" => StructType::PalMapConcreteModelModule,
             "/Script/CoreUObject.Struct" => StructType::Struct(None),
             _ => StructType::Struct(Some(t.to_owned())),
         }
@@ -1245,6 +1322,21 @@ impl StructType {
             StructType::SoftObjectPath => "/Script/CoreUObject.SoftObjectPath",
             StructType::GameplayTagContainer => "/Script/GameplayTags.GameplayTagContainer",
             StructType::UniqueNetIdRepl => "/Script/Engine.UniqueNetIdRepl",
+            StructType::PalCharacterData => "/Script/Pal.PalCharacterData",
+            StructType::PalItemContainer => "/Script/Pal.PalItemContainer",
+            StructType::PalGroupData => "/Script/Pal.PalGroupData",
+            StructType::PalDynamicItem => "/Script/Pal.PalDynamicItem",
+            StructType::PalBuildProcess => "/Script/Pal.PalBuildProcess",
+            StructType::PalGuildItemStorage => "/Script/Pal.PalGuildItemStorage",
+            StructType::PalGuildLab => "/Script/Pal.PalGuildLab",
+            StructType::PalItemContainerSlots => "/Script/Pal.PalItemContainerSlots",
+            StructType::PalCharacterContainer => "/Script/Pal.PalCharacterContainer",
+            StructType::PalConnector => "/Script/Pal.PalConnector",
+            StructType::PalBaseCamp => "/Script/Pal.PalBaseCamp",
+            StructType::PalWork => "/Script/Pal.PalWork",
+            StructType::PalMapModel => "/Script/Pal.PalMapModel",
+            StructType::PalMapConcreteModel => "/Script/Pal.PalMapConcreteModel",
+            StructType::PalMapConcreteModelModule => "/Script/Pal.PalMapConcreteModelModule",
             StructType::Struct(Some(t)) => t,
             _ => unreachable!(),
         }
@@ -1266,6 +1358,21 @@ impl StructType {
             StructType::SoftObjectPath => "SoftObjectPath",
             StructType::GameplayTagContainer => "GameplayTagContainer",
             StructType::UniqueNetIdRepl => "UniqueNetIdRepl",
+            StructType::PalCharacterData => "PalCharacterData",
+            StructType::PalItemContainer => "PalItemContainer",
+            StructType::PalGroupData => "PalGroupData",
+            StructType::PalDynamicItem => "PalDynamicItem",
+            StructType::PalBuildProcess => "PalBuildProcess",
+            StructType::PalGuildItemStorage => "PalGuildItemStorage",
+            StructType::PalGuildLab => "PalGuildLab",
+            StructType::PalItemContainerSlots => "PalItemContainerSlots",
+            StructType::PalCharacterContainer => "PalCharacterContainer",
+            StructType::PalConnector => "PalConnector",
+            StructType::PalBaseCamp => "PalBaseCamp",
+            StructType::PalWork => "PalWork",
+            StructType::PalMapModel => "PalMapModel",
+            StructType::PalMapConcreteModel => "PalMapConcreteModel",
+            StructType::PalMapConcreteModelModule => "PalMapConcreteModelModule",
             StructType::Struct(Some(t)) => t,
             _ => unreachable!(),
         }
@@ -2394,6 +2501,24 @@ pub enum StructValue {
     SoftObjectPath(SoftObjectPath),
     GameplayTagContainer(GameplayTagContainer),
     UniqueNetIdRepl(UniqueNetIdRepl),
+
+    // Palworld custom struct values
+    PalCharacterData(PalCharacterData),
+    PalItemContainer(PalItemContainer),
+    PalGroupData(PalGroupData),
+    PalDynamicItem(PalDynamicItem),
+    PalBuildProcess(PalBuildProcess),
+    PalGuildItemStorage(PalGuildItemStorage),
+    PalGuildLab(PalGuildLab),
+    PalItemContainerSlots(PalItemContainerSlot),
+    PalCharacterContainer(PalCharacterContainer),
+    PalConnector(PalConnector),
+    PalBaseCamp(PalBaseCamp),
+    PalWork(PalWork),
+    PalMapModel(PalMapModel),
+    PalMapConcreteModel(PalMapConcreteModel),
+    PalMapConcreteModelModule(PalMapConcreteModelModule),
+
     /// User defined struct which is simply a list of properties
     Struct(Properties),
 }
@@ -2532,6 +2657,43 @@ impl StructValue {
                 StructValue::UniqueNetIdRepl(UniqueNetIdRepl::read(reader)?)
             }
 
+            // Palworld custom property encoders
+            StructType::PalCharacterData => {
+                StructValue::PalCharacterData(PalCharacterData::read(reader)?)
+            }
+            StructType::PalItemContainer => {
+                StructValue::PalItemContainer(PalItemContainer::read(reader)?)
+            }
+            StructType::PalGroupData => StructValue::PalGroupData(PalGroupData::read(reader)?),
+            StructType::PalDynamicItem => {
+                StructValue::PalDynamicItem(PalDynamicItem::read(reader)?)
+            }
+            StructType::PalBuildProcess => {
+                StructValue::PalBuildProcess(PalBuildProcess::read(reader)?)
+            }
+            StructType::PalGuildItemStorage => {
+                StructValue::PalGuildItemStorage(PalGuildItemStorage::read(reader)?)
+            }
+            StructType::PalGuildLab => StructValue::PalGuildLab(PalGuildLab::read(reader)?),
+            StructType::PalItemContainerSlots => {
+                StructValue::PalItemContainerSlots(PalItemContainerSlot::read(reader)?)
+            }
+            StructType::PalCharacterContainer => {
+                StructValue::PalCharacterContainer(PalCharacterContainer::read(reader)?)
+            }
+            StructType::PalConnector => StructValue::PalConnector(PalConnector::read(reader)?),
+            StructType::PalBaseCamp => StructValue::PalBaseCamp(PalBaseCamp::read(reader)?),
+
+            StructType::PalWork => StructValue::PalWork(PalWork::read(reader)?),
+
+            StructType::PalMapModel => StructValue::PalMapModel(PalMapModel::read(reader)?),
+            StructType::PalMapConcreteModel => {
+                StructValue::PalMapConcreteModel(PalMapConcreteModel::read(reader)?)
+            }
+            StructType::PalMapConcreteModelModule => {
+                StructValue::PalMapConcreteModelModule(PalMapConcreteModelModule::read(reader)?)
+            }
+
             StructType::Struct(_) => StructValue::Struct(read_properties_until_none(reader)?),
         })
     }
@@ -2552,6 +2714,23 @@ impl StructValue {
             StructValue::SoftObjectPath(v) => v.write(writer)?,
             StructValue::GameplayTagContainer(v) => v.write(writer)?,
             StructValue::UniqueNetIdRepl(v) => v.write(writer)?,
+
+            StructValue::PalCharacterData(v) => v.write(writer)?,
+            StructValue::PalItemContainer(v) => v.write(writer)?,
+            StructValue::PalGroupData(v) => v.write(writer)?,
+            StructValue::PalDynamicItem(v) => v.write(writer)?,
+            StructValue::PalBuildProcess(v) => v.write(writer)?,
+            StructValue::PalGuildItemStorage(v) => v.write(writer)?,
+            StructValue::PalGuildLab(v) => v.write(writer)?,
+            StructValue::PalItemContainerSlots(v) => v.write(writer)?,
+            StructValue::PalCharacterContainer(v) => v.write(writer)?,
+            StructValue::PalConnector(v) => v.write(writer)?,
+            StructValue::PalBaseCamp(v) => v.write(writer)?,
+            StructValue::PalWork(v) => v.write(writer)?,
+            StructValue::PalMapModel(v) => v.write(writer)?,
+            StructValue::PalMapConcreteModel(v) => v.write(writer)?,
+            StructValue::PalMapConcreteModelModule(v) => v.write(writer)?,
+
             StructValue::Struct(v) => write_properties_none_terminated(writer, v)?,
         }
         Ok(())
@@ -2789,31 +2968,62 @@ impl ValueArray {
                 id,
                 value,
             } => {
-                writer.write_u32::<LE>(value.len() as u32)?;
-
-                let mut buf = vec![];
-                for v in value {
-                    writer.with_stream(&mut buf, |writer| v.write(writer))?;
-                }
-
-                if !writer.version().property_tag() && writer.version().array_inner_tag() {
-                    write_string(writer, &tag.name)?;
-                    type_.write(writer)?;
-                    writer.write_u32::<LE>(buf.len() as u32)?;
-                    writer.write_u32::<LE>(0)?;
-                    struct_type.write(writer)?;
-                    if let Some(id) = id {
-                        id.write(writer)?;
+                if self.is_palworld_custom_property(struct_type) {
+                    let mut buf = vec![];
+                    for v in value {
+                        writer.with_stream(&mut buf, |writer| v.write(writer))?;
                     }
-                    writer.write_u8(0)?;
+
+                    writer.write_u32::<LE>(buf.len() as u32)?;
+                    writer.write_all(&buf)?;
+                } else {
+                    writer.write_u32::<LE>(value.len() as u32)?;
+
+                    let mut buf = vec![];
+                    for v in value {
+                        writer.with_stream(&mut buf, |writer| v.write(writer))?;
+                    }
+
+                    if !writer.version().property_tag() && writer.version().array_inner_tag() {
+                        write_string(writer, &tag.name)?;
+                        type_.write(writer)?;
+                        writer.write_u32::<LE>(buf.len() as u32)?;
+                        writer.write_u32::<LE>(0)?;
+                        struct_type.write(writer)?;
+                        if let Some(id) = id {
+                            id.write(writer)?;
+                        }
+                        writer.write_u8(0)?;
+                    }
+                    writer.write_all(&buf)?;
                 }
-                writer.write_all(&buf)?;
             }
             ValueArray::Base(vec) => {
                 vec.write(writer)?;
             }
         }
         Ok(())
+    }
+
+    fn is_palworld_custom_property(&self, struct_type: &StructType) -> bool {
+        matches!(
+            struct_type,
+            StructType::PalCharacterData
+                | StructType::PalItemContainer
+                | StructType::PalGroupData
+                | StructType::PalDynamicItem
+                | StructType::PalBuildProcess
+                | StructType::PalGuildItemStorage
+                | StructType::PalGuildLab
+                | StructType::PalItemContainerSlots
+                | StructType::PalCharacterContainer
+                | StructType::PalConnector
+                | StructType::PalBaseCamp
+                | StructType::PalWork
+                | StructType::PalMapModel
+                | StructType::PalMapConcreteModel
+                | StructType::PalMapConcreteModelModule
+        )
     }
 }
 impl ValueSet {
@@ -2972,6 +3182,9 @@ impl Property {
                 }
             },
         };
+
+        let inner = post_process_property(reader, &tag, &reader.path(), inner)?;
+
         Ok(Property {
             tag: tag.into_full(),
             inner,
@@ -3322,6 +3535,20 @@ impl Save {
             })
         })
     }
+
+    pub fn write_compressed<W: Write>(
+        &self,
+        writer: &mut W,
+        format: compression::CompressionFormat,
+    ) -> TResult<()> {
+        let mut buffer = Vec::new();
+        self.write(&mut buffer)?;
+
+        let output = compression::compress_save(&buffer, format)?;
+
+        writer.write_all(&output)?;
+        Ok(())
+    }
 }
 
 pub struct SaveReader<'types> {
@@ -3348,11 +3575,16 @@ impl<'types> SaveReader<'types> {
         self.types = Some(types);
         self
     }
-    pub fn read<S: Read>(self, stream: S) -> Result<Save, ParseError> {
+    pub fn read<S: Read>(self, mut stream: S) -> Result<Save, ParseError> {
         let tmp = Types::new();
         let types = self.types.unwrap_or(&tmp);
 
-        let mut stream = SeekReader::new(stream);
+        let data = compression::decompress_save(&mut stream).map_err(|e| error::ParseError {
+            offset: 0,
+            error: e,
+        })?;
+
+        let mut stream = SeekReader::new(std::io::Cursor::new(data));
         let mut reader = Context {
             stream: &mut stream,
             state: ContextState {
