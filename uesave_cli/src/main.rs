@@ -68,6 +68,10 @@ struct ActionEdit {
     ///   -t .EnemiesKilled.Value=Struct
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
+
+    /// Enable Palworld custom property support
+    #[arg(long)]
+    palworld: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -201,7 +205,11 @@ pub fn main() -> Result<()> {
             println!("Resave successful");
         }
         Action::Edit(action) => {
-            let mut types = Types::new();
+            let mut types = if action.palworld {
+                palworld_types()
+            } else {
+                Types::new()
+            };
             for (path, t) in action.r#type {
                 types.add(path, t);
             }
