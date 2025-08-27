@@ -110,7 +110,31 @@ fn read_string<R: Read + Seek, V>(reader: &mut Context<R, V>) -> TResult<String>
     if len < 0 {
         let chars = read_array((-len) as u32, reader, |r| Ok(r.read_u16::<LE>()?))?;
         let length = chars.iter().position(|&c| c == 0).unwrap_or(chars.len());
-        Ok(String::from_utf16(&chars[..length]).unwrap())
+
+        match String::from_utf16(&chars[..length]) {
+            Ok(s) => Ok(s),
+            Err(_) => {
+                // If decoding fails, use lossy conversion to preserve as much data as possible
+                // This handles invalid UTF-16 sequences including unpaired surrogates
+                let mut result = String::new();
+                for &c in &chars[..length] {
+                    match char::from_u32(c as u32) {
+                        Some(ch) if ch != '\u{FFFD}' => result.push(ch),
+                        _ => {
+                            if c >= 0xD800 && c <= 0xDFFF {
+                                result.push('\u{FFFD}');
+                            } else {
+                                result.push(char::from_u32(c as u32).unwrap_or('\u{FFFD}'));
+                            }
+                        }
+                    }
+                }
+                eprintln!(
+                    "Warning: UTF-16 decoding error, data loss may occur. Using lossy conversion."
+                );
+                Ok(result)
+            }
+        }
     } else {
         let mut chars = vec![0; len as usize];
         reader.read_exact(&mut chars)?;
@@ -150,7 +174,32 @@ fn read_string_trailing<R: Read + Seek, V>(
             rest.push(reader.read_u8()?);
             read += 1;
         }
-        Ok((String::from_utf16(&chars).unwrap(), rest))
+
+        // Handle UTF-16 decoding errors gracefully
+        let string = match String::from_utf16(&chars) {
+            Ok(s) => s,
+            Err(_) => {
+                // If decoding fails, use lossy conversion
+                let mut result = String::new();
+                for &c in &chars {
+                    match char::from_u32(c as u32) {
+                        Some(ch) if ch != '\u{FFFD}' => result.push(ch),
+                        _ => {
+                            if c >= 0xD800 && c <= 0xDFFF {
+                                result.push('\u{FFFD}');
+                            } else {
+                                result.push(char::from_u32(c as u32).unwrap_or('\u{FFFD}'));
+                            }
+                        }
+                    }
+                }
+                eprintln!(
+                    "Warning: UTF-16 decoding error in trailing string, data loss may occur."
+                );
+                result
+            }
+        };
+        Ok((string, rest))
     } else {
         let bytes = len as usize;
         let mut chars = vec![];
@@ -170,7 +219,17 @@ fn read_string_trailing<R: Read + Seek, V>(
             rest.push(reader.read_u8()?);
             read += 1;
         }
-        Ok((String::from_utf8(chars).unwrap(), rest))
+
+        let string = match String::from_utf8(chars) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "Warning: UTF-8 decoding error in trailing string, using lossy conversion."
+                );
+                String::from_utf8_lossy(&e.into_bytes()).into_owned()
+            }
+        };
+        Ok((string, rest))
     }
 }
 fn write_string_trailing<W: Write, V>(
