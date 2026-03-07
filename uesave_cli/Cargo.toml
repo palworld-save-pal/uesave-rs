@@ -16,7 +16,7 @@ license = false
 eula = false
 
 [[bin]]
-name = "uesave"
+name = "palsav"
 path = "src/main.rs"
 
 [dependencies]

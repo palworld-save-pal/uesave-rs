@@ -30,10 +30,6 @@ struct ActionToJson {
     ///   -t .EnemiesKilled.Value=Struct
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
-
-    /// Enable Palworld custom property support
-    #[arg(long)]
-    palworld: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -43,10 +39,6 @@ struct ActionFromJson {
 
     #[arg(short, long, default_value = "-")]
     output: String,
-
-    /// Enable Oodle compression (PLM format) for output
-    #[arg(long)]
-    compress_oodle: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -68,10 +60,6 @@ struct ActionEdit {
     ///   -t .EnemiesKilled.Value=Struct
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
-
-    /// Enable Palworld custom property support
-    #[arg(long)]
-    palworld: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -132,11 +120,7 @@ pub fn main() -> Result<()> {
     match args.action {
         Action::ToJson(action) => {
             let start_time = Some(std::time::Instant::now());
-            let mut types = if action.palworld {
-                palworld_types()
-            } else {
-                Types::new()
-            };
+            let mut types = palworld_types();
 
             for (path, t) in action.r#type {
                 types.add(path, t);
@@ -165,11 +149,7 @@ pub fn main() -> Result<()> {
         }
         Action::FromJson(io) => {
             let save: Save = serde_json::from_reader(&mut input(&io.input)?)?;
-            if io.compress_oodle {
-                save.write_compressed(&mut output(&io.output)?, CompressionFormat::Oodle)?;
-            } else {
-                save.write(&mut output(&io.output)?)?;
-            }
+            save.write_compressed(&mut output(&io.output)?, CompressionFormat::Oodle)?;
         }
         Action::TestResave(action) => {
             let mut types = Types::new();
@@ -205,11 +185,7 @@ pub fn main() -> Result<()> {
             println!("Resave successful");
         }
         Action::Edit(action) => {
-            let mut types = if action.palworld {
-                palworld_types()
-            } else {
-                Types::new()
-            };
+            let mut types = palworld_types();
             for (path, t) in action.r#type {
                 types.add(path, t);
             }
@@ -250,12 +226,19 @@ fn input<'a>(path: &str) -> Result<Box<dyn BufRead + 'a>> {
 fn output<'a>(path: &str) -> Result<Box<dyn Write + 'a>> {
     Ok(match path {
         "-" => Box::new(BufWriter::new(stdout().lock())),
-        p => Box::new(BufWriter::new(
-            OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(p)?,
-        )),
+        p => {
+            if let Some(parent) = std::path::Path::new(p).parent() {
+                if !parent.as_os_str().is_empty() {
+                    fs::create_dir_all(parent)?;
+                }
+            }
+            Box::new(BufWriter::new(
+                OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .open(p)?,
+            ))
+        }
     })
 }
