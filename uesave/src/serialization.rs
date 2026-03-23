@@ -270,10 +270,88 @@ impl<'de, 'a> DeserializeSeed<'de> for ValueVecSeed<'a> {
                 })?;
                 Ok(ValueVec::Struct(structs))
             }
-            _ => {
-                // For base types, manually deserialize without the Struct variant
-                deserialize_value_vec_base(deserializer)
+            PropertyTagDataPartial::Other(pt) => {
+                use crate::PropertyType;
+                match pt {
+                    PropertyType::Int8Property => {
+                        Ok(ValueVec::Int8(Vec::<i8>::deserialize(deserializer)?))
+                    }
+                    PropertyType::Int16Property => {
+                        Ok(ValueVec::Int16(Vec::<i16>::deserialize(deserializer)?))
+                    }
+                    PropertyType::IntProperty => {
+                        Ok(ValueVec::Int(Vec::<i32>::deserialize(deserializer)?))
+                    }
+                    PropertyType::Int64Property => {
+                        Ok(ValueVec::Int64(Vec::<i64>::deserialize(deserializer)?))
+                    }
+                    PropertyType::UInt8Property => {
+                        Ok(ValueVec::UInt8(Vec::<u8>::deserialize(deserializer)?))
+                    }
+                    PropertyType::UInt16Property => {
+                        Ok(ValueVec::UInt16(Vec::<u16>::deserialize(deserializer)?))
+                    }
+                    PropertyType::UInt32Property => {
+                        Ok(ValueVec::UInt32(Vec::<u32>::deserialize(deserializer)?))
+                    }
+                    PropertyType::UInt64Property => {
+                        Ok(ValueVec::UInt64(Vec::<u64>::deserialize(deserializer)?))
+                    }
+                    PropertyType::FloatProperty => Ok(ValueVec::Float(
+                        Vec::<crate::Float>::deserialize(deserializer)?,
+                    )),
+                    PropertyType::DoubleProperty => Ok(ValueVec::Double(
+                        Vec::<crate::Double>::deserialize(deserializer)?,
+                    )),
+                    PropertyType::BoolProperty => {
+                        Ok(ValueVec::Bool(Vec::<bool>::deserialize(deserializer)?))
+                    }
+                    PropertyType::StrProperty => {
+                        Ok(ValueVec::Str(Vec::<String>::deserialize(deserializer)?))
+                    }
+                    PropertyType::NameProperty => {
+                        Ok(ValueVec::Name(Vec::<String>::deserialize(deserializer)?))
+                    }
+                    PropertyType::ObjectProperty => {
+                        Ok(ValueVec::Object(Vec::<String>::deserialize(deserializer)?))
+                    }
+                    PropertyType::SoftObjectProperty => {
+                        Ok(ValueVec::SoftObject(Vec::<SoftObjectPath>::deserialize(
+                            deserializer,
+                        )?))
+                    }
+                    PropertyType::TextProperty => Ok(ValueVec::Text(
+                        Vec::<crate::Text>::deserialize(deserializer)?,
+                    )),
+                    PropertyType::ByteProperty
+                    | PropertyType::EnumProperty
+                    | PropertyType::ArrayProperty
+                    | PropertyType::SetProperty
+                    | PropertyType::MapProperty
+                    | PropertyType::StructProperty
+                    | PropertyType::FieldPathProperty
+                    | PropertyType::DelegateProperty
+                    | PropertyType::MulticastDelegateProperty
+                    | PropertyType::MulticastInlineDelegateProperty
+                    | PropertyType::MulticastSparseDelegateProperty => {
+                        Err(serde::de::Error::custom(format!(
+                            "Unexpected property type {:?} in array",
+                            pt
+                        )))
+                    }
+                }
             }
+            PropertyTagDataPartial::Byte(_) => {
+                Ok(ValueVec::Byte(crate::ByteArray::deserialize(deserializer)?))
+            }
+            PropertyTagDataPartial::Enum(_, _) => {
+                Ok(ValueVec::Enum(Vec::<String>::deserialize(deserializer)?))
+            }
+            PropertyTagDataPartial::Array(_)
+            | PropertyTagDataPartial::Set { .. }
+            | PropertyTagDataPartial::Map { .. } => Err(serde::de::Error::custom(
+                "Nested array/set/map not supported",
+            )),
         }
     }
 }
@@ -623,61 +701,4 @@ impl<'de> Deserialize<'de> for Save {
             SaveVisitor,
         )
     }
-}
-
-// Helper function to deserialize ValueVec for non-struct base types
-fn deserialize_value_vec_base<'de, D>(deserializer: D) -> Result<ValueVec, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    // We need to implement custom deserialization since ValueVec doesn't derive Deserialize
-    // For now, use untagged enum deserialization for all non-Struct variants
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum ValueVecBase {
-        Int8(Vec<i8>),
-        Int16(Vec<i16>),
-        Int(Vec<i32>),
-        Int64(Vec<i64>),
-        UInt8(Vec<u8>),
-        UInt16(Vec<u16>),
-        UInt32(Vec<u32>),
-        UInt64(Vec<u64>),
-        Float(Vec<crate::Float>),
-        Double(Vec<crate::Double>),
-        Bool(Vec<bool>),
-        Byte(crate::ByteArray),
-        Enum(Vec<String>),
-        Str(Vec<String>),
-        Text(Vec<crate::Text>),
-        SoftObject(Vec<SoftObjectPath>),
-        Name(Vec<String>),
-        Object(Vec<String>),
-        Box(Vec<crate::Box>),
-        Box2D(Vec<crate::Box2D>),
-    }
-
-    let base = ValueVecBase::deserialize(deserializer)?;
-    Ok(match base {
-        ValueVecBase::Int8(v) => ValueVec::Int8(v),
-        ValueVecBase::Int16(v) => ValueVec::Int16(v),
-        ValueVecBase::Int(v) => ValueVec::Int(v),
-        ValueVecBase::Int64(v) => ValueVec::Int64(v),
-        ValueVecBase::UInt8(v) => ValueVec::UInt8(v),
-        ValueVecBase::UInt16(v) => ValueVec::UInt16(v),
-        ValueVecBase::UInt32(v) => ValueVec::UInt32(v),
-        ValueVecBase::UInt64(v) => ValueVec::UInt64(v),
-        ValueVecBase::Float(v) => ValueVec::Float(v),
-        ValueVecBase::Double(v) => ValueVec::Double(v),
-        ValueVecBase::Bool(v) => ValueVec::Bool(v),
-        ValueVecBase::Byte(v) => ValueVec::Byte(v),
-        ValueVecBase::Enum(v) => ValueVec::Enum(v),
-        ValueVecBase::Str(v) => ValueVec::Str(v),
-        ValueVecBase::Text(v) => ValueVec::Text(v),
-        ValueVecBase::SoftObject(v) => ValueVec::SoftObject(v),
-        ValueVecBase::Name(v) => ValueVec::Name(v),
-        ValueVecBase::Object(v) => ValueVec::Object(v),
-        ValueVecBase::Box(v) => ValueVec::Box(v),
-        ValueVecBase::Box2D(v) => ValueVec::Box2D(v),
-    })
 }

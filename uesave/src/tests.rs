@@ -565,3 +565,21 @@ fn test_rw_header() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn test_json_roundtrip() {
+    use crate::SaveReader;
+
+    let save = SaveReader::new().read(Cursor::new(SAVE)).unwrap();
+    let json = serde_json::to_string(&save).unwrap();
+    let roundtripped: Save = serde_json::from_str(&json).unwrap();
+    let mut original_bytes = vec![];
+    save.write(&mut Cursor::new(&mut original_bytes)).unwrap();
+
+    let mut roundtripped_bytes = vec![];
+    roundtripped
+        .write(&mut Cursor::new(&mut roundtripped_bytes))
+        .unwrap();
+
+    assert!(original_bytes == roundtripped_bytes);
+}
