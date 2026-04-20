@@ -208,7 +208,7 @@ fn write_optional_uuid<A: ArchiveWriter>(ar: &mut A, id: Option<FGuid>) -> Resul
 }
 
 #[cfg_attr(feature = "tracing", instrument(skip_all, ret))]
-fn read_string<A: ArchiveReader>(ar: &mut A) -> Result<String> {
+pub fn read_string<A: ArchiveReader>(ar: &mut A) -> Result<String> {
     let len = ar.read_i32::<LE>()?;
     if len < 0 {
         let chars = read_array((-len) as u32, ar, |r| Ok(r.read_u16::<LE>()?))?;
@@ -222,7 +222,7 @@ fn read_string<A: ArchiveReader>(ar: &mut A) -> Result<String> {
     }
 }
 #[cfg_attr(feature = "tracing", instrument(skip(ar)))]
-fn write_string<A: ArchiveWriter>(ar: &mut A, string: &str) -> Result<()> {
+pub fn write_string<A: ArchiveWriter>(ar: &mut A, string: &str) -> Result<()> {
     if string.is_empty() {
         ar.write_u32::<LE>(0)?;
     } else {
@@ -890,6 +890,7 @@ impl PropertyTagFull<'_> {
                     | PropertyType::DoubleProperty
                     | PropertyType::StrProperty
                     | PropertyType::ObjectProperty
+                    | PropertyType::InterfaceProperty
                     | PropertyType::FieldPathProperty
                     | PropertyType::SoftObjectProperty
                     | PropertyType::NameProperty
@@ -1176,6 +1177,7 @@ define_property_types! {
     EnumProperty,
     ArrayProperty,
     ObjectProperty,
+    InterfaceProperty,
     StrProperty,
     FieldPathProperty,
     SoftObjectProperty,
@@ -1287,6 +1289,27 @@ define_struct_types! {
     ("/Script/Engine", RichCurveKey),
     ("/Script/Engine", SkeletalMeshSamplingLODBuiltData),
     ("/Script/Engine", PerPlatformFloat),
+    ("/Script/CoreUObject", FrameNumber),
+    ("/Script/Engine", ExpressionInput),
+    ("/Script/Engine", MaterialAttributesInput),
+    ("/Script/Engine", ColorMaterialInput),
+    ("/Script/Engine", ScalarMaterialInput),
+    ("/Script/Engine", ShadingModelMaterialInput),
+    ("/Script/Engine", VectorMaterialInput),
+    ("/Script/Engine", Vector2MaterialInput),
+    ("/Script/MovieScene", MovieSceneFrameRange),
+    ("/Script/MovieScene", MovieSceneFloatChannel),
+    ("/Script/MovieScene", MovieSceneSequenceID),
+    ("/Script/MovieScene", MovieSceneTrackIdentifier),
+    ("/Script/MovieScene", MovieSceneEvaluationKey),
+    ("/Script/MovieScene", MovieSceneEvaluationFieldEntityTree),
+    ("/Script/SlateCore", FontData),
+    ("/Script/ClothingSystemRuntimeCommon", ClothLODDataCommon),
+    ("/Script/Niagara", NiagaraVariable),
+    ("/Script/Niagara", NiagaraVariableBase),
+    ("/Script/Niagara", NiagaraVariableWithOffset),
+    ("/Script/NiagaraShader", NiagaraDataInterfaceGeneratedFunction),
+    ("/Script/NiagaraShader", NiagaraDataInterfaceGPUParamInfo),
 }
 
 type DateTime = u64;
@@ -1554,24 +1577,28 @@ impl<T: ArchiveType> MapEntry<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FieldPath {
-    path: Vec<String>,
-    owner: String,
+#[serde(bound(
+    serialize = "T::ObjectRef: Serialize",
+    deserialize = "T::ObjectRef: Deserialize<'de>"
+))]
+pub struct FieldPath<T: ArchiveType = SaveGameArchiveType> {
+    pub path: Vec<String>,
+    pub owner: T::ObjectRef,
 }
-impl FieldPath {
+impl<T: ArchiveType> FieldPath<T> {
     #[cfg_attr(feature = "tracing", instrument(name = "FieldPath_read", skip_all))]
-    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+    fn read<A: ArchiveReader<ArchiveType = T>>(ar: &mut A) -> Result<Self> {
         Ok(Self {
             path: read_array(ar.read_u32::<LE>()?, ar, |ar| ar.read_string())?,
-            owner: ar.read_string()?,
+            owner: ar.read_object_ref()?,
         })
     }
-    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+    fn write<A: ArchiveWriter<ArchiveType = T>>(&self, ar: &mut A) -> Result<()> {
         ar.write_u32::<LE>(self.path.len() as u32)?;
         for p in &self.path {
             ar.write_string(p)?;
         }
-        ar.write_string(&self.owner)?;
+        ar.write_object_ref(&self.owner)?;
         Ok(())
     }
 }
@@ -2048,6 +2075,910 @@ impl FRichCurveKey {
         ar.write_f32::<LE>(self.arrive_tangent_weight.into())?;
         ar.write_f32::<LE>(self.leave_tangent.into())?;
         ar.write_f32::<LE>(self.leave_tangent_weight.into())?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FFrameNumberRangeBound {
+    pub bound_type: u8,
+    pub value: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneFrameRange {
+    pub lower_bound: FFrameNumberRangeBound,
+    pub upper_bound: FFrameNumberRangeBound,
+}
+
+impl FMovieSceneFrameRange {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            lower_bound: FFrameNumberRangeBound {
+                bound_type: ar.read_u8()?,
+                value: ar.read_i32::<LE>()?,
+            },
+            upper_bound: FFrameNumberRangeBound {
+                bound_type: ar.read_u8()?,
+                value: ar.read_i32::<LE>()?,
+            },
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_u8(self.lower_bound.bound_type)?;
+        ar.write_i32::<LE>(self.lower_bound.value)?;
+        ar.write_u8(self.upper_bound.bound_type)?;
+        ar.write_i32::<LE>(self.upper_bound.value)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneTangentData {
+    pub arrive_tangent: Float,
+    pub leave_tangent: Float,
+    pub arrive_tangent_weight: Float,
+    pub leave_tangent_weight: Float,
+    pub tangent_weight_mode: u8,
+    /// 3 bytes of compiler-inserted alignment padding (struct is 4-aligned)
+    pub _padding: [u8; 3],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneFloatValue {
+    pub value: Float,
+    pub tangent: FMovieSceneTangentData,
+    pub interp_mode: u8,
+    pub tangent_mode: u8,
+    pub padding_byte: u8,
+    /// 1 byte trailing alignment padding so the struct totals 28 bytes
+    pub _padding: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneFloatChannel {
+    pub pre_infinity_extrap: u8,
+    pub post_infinity_extrap: u8,
+    pub times: Vec<i32>,
+    pub values: Vec<FMovieSceneFloatValue>,
+    pub default_value: Float,
+    pub has_default_value: bool,
+    pub tick_resolution_numerator: i32,
+    pub tick_resolution_denominator: i32,
+}
+
+impl FMovieSceneFloatChannel {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        let pre_infinity_extrap = ar.read_u8()?;
+        let post_infinity_extrap = ar.read_u8()?;
+
+        let times_elem_size = ar.read_i32::<LE>()?;
+        if times_elem_size != 4 {
+            return Err(Error::Other(format!(
+                "FMovieSceneFloatChannel: unexpected Times element size {} (expected 4)",
+                times_elem_size
+            )));
+        }
+        let times_count = ar.read_i32::<LE>()? as usize;
+        let mut times = Vec::with_capacity(times_count);
+        for _ in 0..times_count {
+            times.push(ar.read_i32::<LE>()?);
+        }
+
+        let values_elem_size = ar.read_i32::<LE>()?;
+        if values_elem_size != 28 {
+            return Err(Error::Other(format!(
+                "FMovieSceneFloatChannel: unexpected Values element size {} (expected 28)",
+                values_elem_size
+            )));
+        }
+        let values_count = ar.read_i32::<LE>()? as usize;
+        let mut values = Vec::with_capacity(values_count);
+        for _ in 0..values_count {
+            let value = ar.read_f32::<LE>()?.into();
+            let arrive_tangent = ar.read_f32::<LE>()?.into();
+            let leave_tangent = ar.read_f32::<LE>()?.into();
+            let arrive_tangent_weight = ar.read_f32::<LE>()?.into();
+            let leave_tangent_weight = ar.read_f32::<LE>()?.into();
+            let tangent_weight_mode = ar.read_u8()?;
+            let mut tangent_padding = [0u8; 3];
+            ar.read_exact(&mut tangent_padding)?;
+            let interp_mode = ar.read_u8()?;
+            let tangent_mode = ar.read_u8()?;
+            let padding_byte = ar.read_u8()?;
+            let trailing_padding = ar.read_u8()?;
+            values.push(FMovieSceneFloatValue {
+                value,
+                tangent: FMovieSceneTangentData {
+                    arrive_tangent,
+                    leave_tangent,
+                    arrive_tangent_weight,
+                    leave_tangent_weight,
+                    tangent_weight_mode,
+                    _padding: tangent_padding,
+                },
+                interp_mode,
+                tangent_mode,
+                padding_byte,
+                _padding: trailing_padding,
+            });
+        }
+
+        let default_value = ar.read_f32::<LE>()?.into();
+        let has_default_value = ar.read_u32::<LE>()? != 0;
+        let tick_resolution_numerator = ar.read_i32::<LE>()?;
+        let tick_resolution_denominator = ar.read_i32::<LE>()?;
+
+        Ok(Self {
+            pre_infinity_extrap,
+            post_infinity_extrap,
+            times,
+            values,
+            default_value,
+            has_default_value,
+            tick_resolution_numerator,
+            tick_resolution_denominator,
+        })
+    }
+
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_u8(self.pre_infinity_extrap)?;
+        ar.write_u8(self.post_infinity_extrap)?;
+
+        ar.write_i32::<LE>(4)?;
+        ar.write_i32::<LE>(self.times.len() as i32)?;
+        for t in &self.times {
+            ar.write_i32::<LE>(*t)?;
+        }
+
+        ar.write_i32::<LE>(28)?;
+        ar.write_i32::<LE>(self.values.len() as i32)?;
+        for v in &self.values {
+            ar.write_f32::<LE>(v.value.into())?;
+            ar.write_f32::<LE>(v.tangent.arrive_tangent.into())?;
+            ar.write_f32::<LE>(v.tangent.leave_tangent.into())?;
+            ar.write_f32::<LE>(v.tangent.arrive_tangent_weight.into())?;
+            ar.write_f32::<LE>(v.tangent.leave_tangent_weight.into())?;
+            ar.write_u8(v.tangent.tangent_weight_mode)?;
+            ar.write_all(&v.tangent._padding)?;
+            ar.write_u8(v.interp_mode)?;
+            ar.write_u8(v.tangent_mode)?;
+            ar.write_u8(v.padding_byte)?;
+            ar.write_u8(v._padding)?;
+        }
+
+        ar.write_f32::<LE>(self.default_value.into())?;
+        ar.write_u32::<LE>(if self.has_default_value { 1 } else { 0 })?;
+        ar.write_i32::<LE>(self.tick_resolution_numerator)?;
+        ar.write_i32::<LE>(self.tick_resolution_denominator)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FExpressionInput {
+    pub output_index: i32,
+    pub input_name: String,
+    pub mask: i32,
+    pub mask_r: i32,
+    pub mask_g: i32,
+    pub mask_b: i32,
+    pub mask_a: i32,
+    pub expression_name: String,
+}
+
+impl FExpressionInput {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            output_index: ar.read_i32::<LE>()?,
+            input_name: ar.read_string()?,
+            mask: ar.read_i32::<LE>()?,
+            mask_r: ar.read_i32::<LE>()?,
+            mask_g: ar.read_i32::<LE>()?,
+            mask_b: ar.read_i32::<LE>()?,
+            mask_a: ar.read_i32::<LE>()?,
+            expression_name: ar.read_string()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_i32::<LE>(self.output_index)?;
+        ar.write_string(&self.input_name)?;
+        ar.write_i32::<LE>(self.mask)?;
+        ar.write_i32::<LE>(self.mask_r)?;
+        ar.write_i32::<LE>(self.mask_g)?;
+        ar.write_i32::<LE>(self.mask_b)?;
+        ar.write_i32::<LE>(self.mask_a)?;
+        ar.write_string(&self.expression_name)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FColorMaterialInput {
+    pub base: FExpressionInput,
+    pub use_constant: bool,
+    pub constant: Color,
+}
+
+impl FColorMaterialInput {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            base: FExpressionInput::read(ar)?,
+            use_constant: ar.read_u32::<LE>()? != 0,
+            constant: Color::read(ar)?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        self.base.write(ar)?;
+        ar.write_u32::<LE>(if self.use_constant { 1 } else { 0 })?;
+        self.constant.write(ar)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FScalarMaterialInput {
+    pub base: FExpressionInput,
+    pub use_constant: bool,
+    pub constant: Float,
+}
+
+impl FScalarMaterialInput {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            base: FExpressionInput::read(ar)?,
+            use_constant: ar.read_u32::<LE>()? != 0,
+            constant: ar.read_f32::<LE>()?.into(),
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        self.base.write(ar)?;
+        ar.write_u32::<LE>(if self.use_constant { 1 } else { 0 })?;
+        ar.write_f32::<LE>(self.constant.into())?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FShadingModelMaterialInput {
+    pub base: FExpressionInput,
+    pub use_constant: bool,
+    pub constant: u32,
+}
+
+impl FShadingModelMaterialInput {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            base: FExpressionInput::read(ar)?,
+            use_constant: ar.read_u32::<LE>()? != 0,
+            constant: ar.read_u32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        self.base.write(ar)?;
+        ar.write_u32::<LE>(if self.use_constant { 1 } else { 0 })?;
+        ar.write_u32::<LE>(self.constant)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FVectorMaterialInput {
+    pub base: FExpressionInput,
+    pub use_constant: bool,
+    pub constant: Vector,
+}
+
+impl FVectorMaterialInput {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            base: FExpressionInput::read(ar)?,
+            use_constant: ar.read_u32::<LE>()? != 0,
+            constant: Vector::read(ar)?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        self.base.write(ar)?;
+        ar.write_u32::<LE>(if self.use_constant { 1 } else { 0 })?;
+        self.constant.write(ar)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FVector2MaterialInput {
+    pub base: FExpressionInput,
+    pub use_constant: bool,
+    pub constant: Vector2D,
+}
+
+impl FVector2MaterialInput {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            base: FExpressionInput::read(ar)?,
+            use_constant: ar.read_u32::<LE>()? != 0,
+            constant: Vector2D::read(ar)?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        self.base.write(ar)?;
+        ar.write_u32::<LE>(if self.use_constant { 1 } else { 0 })?;
+        self.constant.write(ar)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FFrameNumber {
+    pub value: i32,
+}
+
+impl FFrameNumber {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            value: ar.read_i32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_i32::<LE>(self.value)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneSequenceID {
+    pub value: u32,
+}
+
+impl FMovieSceneSequenceID {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            value: ar.read_u32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_u32::<LE>(self.value)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneTrackIdentifier {
+    pub value: u32,
+}
+
+impl FMovieSceneTrackIdentifier {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            value: ar.read_u32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_u32::<LE>(self.value)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FEvaluationTreeEntryHandle {
+    pub entry_index: i32,
+}
+
+impl FEvaluationTreeEntryHandle {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            entry_index: ar.read_i32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_i32::<LE>(self.entry_index)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneEvaluationTreeNodeHandle {
+    pub children_handle: FEvaluationTreeEntryHandle,
+    pub index: i32,
+}
+
+impl FMovieSceneEvaluationTreeNodeHandle {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            children_handle: FEvaluationTreeEntryHandle::read(ar)?,
+            index: ar.read_i32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        self.children_handle.write(ar)?;
+        ar.write_i32::<LE>(self.index)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FFrameNumberRange {
+    pub lower_bound_type: u8,
+    pub lower_bound_value: i32,
+    pub upper_bound_type: u8,
+    pub upper_bound_value: i32,
+}
+
+impl FFrameNumberRange {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            lower_bound_type: ar.read_u8()?,
+            lower_bound_value: ar.read_i32::<LE>()?,
+            upper_bound_type: ar.read_u8()?,
+            upper_bound_value: ar.read_i32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_u8(self.lower_bound_type)?;
+        ar.write_i32::<LE>(self.lower_bound_value)?;
+        ar.write_u8(self.upper_bound_type)?;
+        ar.write_i32::<LE>(self.upper_bound_value)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneEvaluationTreeNode {
+    pub range: FFrameNumberRange,
+    pub parent: FMovieSceneEvaluationTreeNodeHandle,
+    pub children_id: FEvaluationTreeEntryHandle,
+    pub data_id: FEvaluationTreeEntryHandle,
+}
+
+impl FMovieSceneEvaluationTreeNode {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            range: FFrameNumberRange::read(ar)?,
+            parent: FMovieSceneEvaluationTreeNodeHandle::read(ar)?,
+            children_id: FEvaluationTreeEntryHandle::read(ar)?,
+            data_id: FEvaluationTreeEntryHandle::read(ar)?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        self.range.write(ar)?;
+        self.parent.write(ar)?;
+        self.children_id.write(ar)?;
+        self.data_id.write(ar)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FEvaluationTreeEntry {
+    pub start_index: i32,
+    pub size: i32,
+    pub capacity: i32,
+}
+
+impl FEvaluationTreeEntry {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            start_index: ar.read_i32::<LE>()?,
+            size: ar.read_i32::<LE>()?,
+            capacity: ar.read_i32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_i32::<LE>(self.start_index)?;
+        ar.write_i32::<LE>(self.size)?;
+        ar.write_i32::<LE>(self.capacity)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FEntityAndMetaDataIndex {
+    pub entity_index: i32,
+    pub meta_data_index: i32,
+}
+
+impl FEntityAndMetaDataIndex {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            entity_index: ar.read_i32::<LE>()?,
+            meta_data_index: ar.read_i32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_i32::<LE>(self.entity_index)?;
+        ar.write_i32::<LE>(self.meta_data_index)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneEvaluationFieldEntityTree {
+    pub root_node: FMovieSceneEvaluationTreeNode,
+    pub child_nodes_entries: Vec<FEvaluationTreeEntry>,
+    pub child_nodes_items: Vec<FMovieSceneEvaluationTreeNode>,
+    pub data_entries: Vec<FEvaluationTreeEntry>,
+    pub data_items: Vec<FEntityAndMetaDataIndex>,
+}
+
+impl FMovieSceneEvaluationFieldEntityTree {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        let root_node = FMovieSceneEvaluationTreeNode::read(ar)?;
+        let child_nodes_entries_count = ar.read_u32::<LE>()? as usize;
+        let mut child_nodes_entries = Vec::with_capacity(child_nodes_entries_count);
+        for _ in 0..child_nodes_entries_count {
+            child_nodes_entries.push(FEvaluationTreeEntry::read(ar)?);
+        }
+        let child_nodes_items_count = ar.read_u32::<LE>()? as usize;
+        let mut child_nodes_items = Vec::with_capacity(child_nodes_items_count);
+        for _ in 0..child_nodes_items_count {
+            child_nodes_items.push(FMovieSceneEvaluationTreeNode::read(ar)?);
+        }
+        let data_entries_count = ar.read_u32::<LE>()? as usize;
+        let mut data_entries = Vec::with_capacity(data_entries_count);
+        for _ in 0..data_entries_count {
+            data_entries.push(FEvaluationTreeEntry::read(ar)?);
+        }
+        let data_items_count = ar.read_u32::<LE>()? as usize;
+        let mut data_items = Vec::with_capacity(data_items_count);
+        for _ in 0..data_items_count {
+            data_items.push(FEntityAndMetaDataIndex::read(ar)?);
+        }
+        Ok(Self {
+            root_node,
+            child_nodes_entries,
+            child_nodes_items,
+            data_entries,
+            data_items,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        self.root_node.write(ar)?;
+        ar.write_u32::<LE>(self.child_nodes_entries.len() as u32)?;
+        for e in &self.child_nodes_entries {
+            e.write(ar)?;
+        }
+        ar.write_u32::<LE>(self.child_nodes_items.len() as u32)?;
+        for n in &self.child_nodes_items {
+            n.write(ar)?;
+        }
+        ar.write_u32::<LE>(self.data_entries.len() as u32)?;
+        for e in &self.data_entries {
+            e.write(ar)?;
+        }
+        ar.write_u32::<LE>(self.data_items.len() as u32)?;
+        for d in &self.data_items {
+            d.write(ar)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FMovieSceneEvaluationKey {
+    pub sequence_id: FMovieSceneSequenceID,
+    pub track_identifier: FMovieSceneTrackIdentifier,
+    pub section_index: u32,
+}
+
+impl FMovieSceneEvaluationKey {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            sequence_id: FMovieSceneSequenceID::read(ar)?,
+            track_identifier: FMovieSceneTrackIdentifier::read(ar)?,
+            section_index: ar.read_u32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        self.sequence_id.write(ar)?;
+        self.track_identifier.write(ar)?;
+        ar.write_u32::<LE>(self.section_index)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T::ObjectRef: Serialize",
+    deserialize = "T::ObjectRef: Deserialize<'de>"
+))]
+pub struct FFontData<T: ArchiveType = SaveGameArchiveType> {
+    pub is_cooked: bool,
+    pub font_face_asset: T::ObjectRef,
+    /// Only present in cooked data when font_face_asset is null
+    pub font_filename: Option<String>,
+    pub hinting: Option<u8>,
+    pub loading_policy: Option<u8>,
+    pub sub_face_index: i32,
+}
+
+impl<T: ArchiveType> FFontData<T> {
+    fn read<A: ArchiveReader<ArchiveType = T>>(ar: &mut A) -> Result<Self> {
+        let is_cooked = ar.read_u32::<LE>()? != 0;
+        let font_face_asset = ar.read_object_ref()?;
+        let has_extra = T::is_null_object_ref(&font_face_asset);
+        let (font_filename, hinting, loading_policy) = if has_extra {
+            (
+                Some(read_string(ar)?),
+                Some(ar.read_u8()?),
+                Some(ar.read_u8()?),
+            )
+        } else {
+            (None, None, None)
+        };
+        let sub_face_index = ar.read_i32::<LE>()?;
+        Ok(Self {
+            is_cooked,
+            font_face_asset,
+            font_filename,
+            hinting,
+            loading_policy,
+            sub_face_index,
+        })
+    }
+    fn write<A: ArchiveWriter<ArchiveType = T>>(&self, ar: &mut A) -> Result<()> {
+        ar.write_u32::<LE>(if self.is_cooked { 1 } else { 0 })?;
+        ar.write_object_ref(&self.font_face_asset)?;
+        if T::is_null_object_ref(&self.font_face_asset) {
+            write_string(ar, self.font_filename.as_deref().unwrap_or(""))?;
+            ar.write_u8(self.hinting.unwrap_or(0))?;
+            ar.write_u8(self.loading_policy.unwrap_or(0))?;
+        }
+        ar.write_i32::<LE>(self.sub_face_index)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FNiagaraDataInterfaceGeneratedFunction {
+    pub definition_name: String,
+    pub instance_name: String,
+    pub specifiers: Vec<(String, String)>,
+}
+
+impl FNiagaraDataInterfaceGeneratedFunction {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        let definition_name = ar.read_string()?;
+        let instance_name = read_string(ar)?;
+        let count = ar.read_i32::<LE>()? as usize;
+        let mut specifiers = Vec::with_capacity(count);
+        for _ in 0..count {
+            specifiers.push((ar.read_string()?, ar.read_string()?));
+        }
+        Ok(Self {
+            definition_name,
+            instance_name,
+            specifiers,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_string(&self.definition_name)?;
+        write_string(ar, &self.instance_name)?;
+        ar.write_i32::<LE>(self.specifiers.len() as i32)?;
+        for (a, b) in &self.specifiers {
+            ar.write_string(a)?;
+            ar.write_string(b)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FNiagaraDataInterfaceGPUParamInfo {
+    pub data_interface_hlsl_symbol: String,
+    pub di_class_name: String,
+    pub generated_functions: Vec<FNiagaraDataInterfaceGeneratedFunction>,
+}
+
+impl FNiagaraDataInterfaceGPUParamInfo {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        let data_interface_hlsl_symbol = read_string(ar)?;
+        let di_class_name = read_string(ar)?;
+        let count = ar.read_i32::<LE>()? as usize;
+        let mut generated_functions = Vec::with_capacity(count);
+        for _ in 0..count {
+            generated_functions.push(FNiagaraDataInterfaceGeneratedFunction::read(ar)?);
+        }
+        Ok(Self {
+            data_interface_hlsl_symbol,
+            di_class_name,
+            generated_functions,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        write_string(ar, &self.data_interface_hlsl_symbol)?;
+        write_string(ar, &self.di_class_name)?;
+        ar.write_i32::<LE>(self.generated_functions.len() as i32)?;
+        for f in &self.generated_functions {
+            f.write(ar)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FMeshToMeshVertData {
+    pub position_bary_coords_and_dist: [Float; 4],
+    pub normal_bary_coords_and_dist: [Float; 4],
+    pub tangent_bary_coords_and_dist: [Float; 4],
+    pub source_mesh_vert_indices: [u16; 4],
+    pub weight: Float,
+    pub padding: u32,
+}
+
+impl FMeshToMeshVertData {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        let read_v4 = |ar: &mut A| -> Result<[Float; 4]> {
+            Ok([
+                ar.read_f32::<LE>()?.into(),
+                ar.read_f32::<LE>()?.into(),
+                ar.read_f32::<LE>()?.into(),
+                ar.read_f32::<LE>()?.into(),
+            ])
+        };
+        Ok(Self {
+            position_bary_coords_and_dist: read_v4(ar)?,
+            normal_bary_coords_and_dist: read_v4(ar)?,
+            tangent_bary_coords_and_dist: read_v4(ar)?,
+            source_mesh_vert_indices: [
+                ar.read_u16::<LE>()?,
+                ar.read_u16::<LE>()?,
+                ar.read_u16::<LE>()?,
+                ar.read_u16::<LE>()?,
+            ],
+            weight: ar.read_f32::<LE>()?.into(),
+            padding: ar.read_u32::<LE>()?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        for v4 in [
+            &self.position_bary_coords_and_dist,
+            &self.normal_bary_coords_and_dist,
+            &self.tangent_bary_coords_and_dist,
+        ] {
+            for f in v4 {
+                ar.write_f32::<LE>((*f).into())?;
+            }
+        }
+        for i in &self.source_mesh_vert_indices {
+            ar.write_u16::<LE>(*i)?;
+        }
+        ar.write_f32::<LE>(self.weight.into())?;
+        ar.write_u32::<LE>(self.padding)?;
+        Ok(())
+    }
+}
+
+/// `FClothLODDataCommon::Serialize` writes the struct's tagged-properties and then appends
+/// two TArray<FMeshToMeshVertData> (non-USTRUCT) binary blobs for transition skinning data.
+/// Reading stops at the None terminator by default, leaving those bytes unconsumed and
+/// misaligning the next `LodData` element. Specialize the struct so the trailing binary is
+/// read explicitly.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(bound(serialize = "T::ObjectRef: Serialize"))]
+pub struct FClothLODDataCommon<T: ArchiveType = SaveGameArchiveType> {
+    pub properties: Properties<T>,
+    pub transition_up_skin_data: Vec<FMeshToMeshVertData>,
+    pub transition_down_skin_data: Vec<FMeshToMeshVertData>,
+}
+
+impl<T: ArchiveType> FClothLODDataCommon<T> {
+    fn read<A: ArchiveReader<ArchiveType = T>>(ar: &mut A) -> Result<Self> {
+        let properties = read_properties_until_none(ar)?;
+        let up_count = ar.read_i32::<LE>()? as usize;
+        let mut transition_up_skin_data = Vec::with_capacity(up_count);
+        for _ in 0..up_count {
+            transition_up_skin_data.push(FMeshToMeshVertData::read(ar)?);
+        }
+        let down_count = ar.read_i32::<LE>()? as usize;
+        let mut transition_down_skin_data = Vec::with_capacity(down_count);
+        for _ in 0..down_count {
+            transition_down_skin_data.push(FMeshToMeshVertData::read(ar)?);
+        }
+        Ok(Self {
+            properties,
+            transition_up_skin_data,
+            transition_down_skin_data,
+        })
+    }
+    fn write<A: ArchiveWriter<ArchiveType = T>>(&self, ar: &mut A) -> Result<()> {
+        write_properties_none_terminated(ar, &self.properties)?;
+        ar.write_i32::<LE>(self.transition_up_skin_data.len() as i32)?;
+        for v in &self.transition_up_skin_data {
+            v.write(ar)?;
+        }
+        ar.write_i32::<LE>(self.transition_down_skin_data.len() as i32)?;
+        for v in &self.transition_down_skin_data {
+            v.write(ar)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(bound(serialize = "T::ObjectRef: Serialize"))]
+pub struct FNiagaraVariable<T: ArchiveType = SaveGameArchiveType> {
+    pub name: String,
+    pub type_def: Properties<T>,
+    pub var_data: Vec<u8>,
+}
+
+impl<T: ArchiveType> FNiagaraVariable<T> {
+    fn read<A: ArchiveReader<ArchiveType = T>>(ar: &mut A) -> Result<Self> {
+        let name = ar.read_string()?;
+        ar.scope().push("type_def");
+        let type_def = read_properties_until_none(ar)?;
+        ar.scope().pop();
+        let count = ar.read_u32::<LE>()? as usize;
+        let mut var_data = vec![0u8; count];
+        ar.read_exact(&mut var_data)?;
+        Ok(Self {
+            name,
+            type_def,
+            var_data,
+        })
+    }
+    fn write<A: ArchiveWriter<ArchiveType = T>>(&self, ar: &mut A) -> Result<()> {
+        ar.write_string(&self.name)?;
+        ar.scope().push("type_def");
+        write_properties_none_terminated(ar, &self.type_def)?;
+        ar.scope().pop();
+        ar.write_u32::<LE>(self.var_data.len() as u32)?;
+        ar.write_all(&self.var_data)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(bound(serialize = "T::ObjectRef: Serialize"))]
+pub struct FNiagaraVariableBase<T: ArchiveType = SaveGameArchiveType> {
+    pub name: String,
+    pub type_def: Properties<T>,
+}
+
+impl<T: ArchiveType> FNiagaraVariableBase<T> {
+    fn read<A: ArchiveReader<ArchiveType = T>>(ar: &mut A) -> Result<Self> {
+        let name = ar.read_string()?;
+        ar.scope().push("type_def");
+        let type_def = read_properties_until_none(ar)?;
+        ar.scope().pop();
+        Ok(Self { name, type_def })
+    }
+    fn write<A: ArchiveWriter<ArchiveType = T>>(&self, ar: &mut A) -> Result<()> {
+        ar.write_string(&self.name)?;
+        ar.scope().push("type_def");
+        write_properties_none_terminated(ar, &self.type_def)?;
+        ar.scope().pop();
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(bound(serialize = "T::ObjectRef: Serialize"))]
+pub struct FNiagaraVariableWithOffset<T: ArchiveType = SaveGameArchiveType> {
+    pub name: String,
+    pub type_def: Properties<T>,
+    pub offset: i32,
+}
+
+impl<T: ArchiveType> FNiagaraVariableWithOffset<T> {
+    fn read<A: ArchiveReader<ArchiveType = T>>(ar: &mut A) -> Result<Self> {
+        let name = ar.read_string()?;
+        ar.scope().push("type_def");
+        let type_def = read_properties_until_none(ar)?;
+        ar.scope().pop();
+        let offset = ar.read_i32::<LE>()?;
+        Ok(Self {
+            name,
+            type_def,
+            offset,
+        })
+    }
+    fn write<A: ArchiveWriter<ArchiveType = T>>(&self, ar: &mut A) -> Result<()> {
+        ar.write_string(&self.name)?;
+        ar.scope().push("type_def");
+        write_properties_none_terminated(ar, &self.type_def)?;
+        ar.scope().pop();
+        ar.write_i32::<LE>(self.offset)?;
         Ok(())
     }
 }
@@ -2667,6 +3598,27 @@ pub enum StructValue<T: ArchiveType = SaveGameArchiveType> {
     RichCurveKey(FRichCurveKey),
     SkeletalMeshSamplingLODBuiltData(FSkeletalMeshSamplingLODBuiltData),
     PerPlatformFloat(FPerPlatformFloat),
+    MovieSceneFrameRange(FMovieSceneFrameRange),
+    MovieSceneFloatChannel(FMovieSceneFloatChannel),
+    FrameNumber(FFrameNumber),
+    ExpressionInput(FExpressionInput),
+    MaterialAttributesInput(FExpressionInput),
+    ColorMaterialInput(FColorMaterialInput),
+    ScalarMaterialInput(FScalarMaterialInput),
+    ShadingModelMaterialInput(FShadingModelMaterialInput),
+    VectorMaterialInput(FVectorMaterialInput),
+    Vector2MaterialInput(FVector2MaterialInput),
+    MovieSceneSequenceID(FMovieSceneSequenceID),
+    MovieSceneTrackIdentifier(FMovieSceneTrackIdentifier),
+    MovieSceneEvaluationKey(FMovieSceneEvaluationKey),
+    MovieSceneEvaluationFieldEntityTree(FMovieSceneEvaluationFieldEntityTree),
+    FontData(FFontData<T>),
+    ClothLODDataCommon(FClothLODDataCommon<T>),
+    NiagaraVariable(FNiagaraVariable<T>),
+    NiagaraVariableBase(FNiagaraVariableBase<T>),
+    NiagaraVariableWithOffset(FNiagaraVariableWithOffset<T>),
+    NiagaraDataInterfaceGeneratedFunction(FNiagaraDataInterfaceGeneratedFunction),
+    NiagaraDataInterfaceGPUParamInfo(FNiagaraDataInterfaceGPUParamInfo),
     /// Raw struct data for other unknown structs serialized with HasBinaryOrNativeSerialize
     Raw(Vec<u8>),
     /// User defined struct which is simply a list of properties
@@ -2738,6 +3690,71 @@ impl<T: ArchiveType> StructValue<T> {
             StructType::PerPlatformFloat => {
                 StructValue::PerPlatformFloat(FPerPlatformFloat::read(ar)?)
             }
+            StructType::MovieSceneFrameRange => {
+                StructValue::MovieSceneFrameRange(FMovieSceneFrameRange::read(ar)?)
+            }
+            StructType::MovieSceneFloatChannel => {
+                StructValue::MovieSceneFloatChannel(FMovieSceneFloatChannel::read(ar)?)
+            }
+            StructType::FrameNumber => StructValue::FrameNumber(FFrameNumber::read(ar)?),
+            StructType::ExpressionInput => {
+                StructValue::ExpressionInput(FExpressionInput::read(ar)?)
+            }
+            StructType::MaterialAttributesInput => {
+                StructValue::MaterialAttributesInput(FExpressionInput::read(ar)?)
+            }
+            StructType::ColorMaterialInput => {
+                StructValue::ColorMaterialInput(FColorMaterialInput::read(ar)?)
+            }
+            StructType::ScalarMaterialInput => {
+                StructValue::ScalarMaterialInput(FScalarMaterialInput::read(ar)?)
+            }
+            StructType::ShadingModelMaterialInput => {
+                StructValue::ShadingModelMaterialInput(FShadingModelMaterialInput::read(ar)?)
+            }
+            StructType::VectorMaterialInput => {
+                StructValue::VectorMaterialInput(FVectorMaterialInput::read(ar)?)
+            }
+            StructType::Vector2MaterialInput => {
+                StructValue::Vector2MaterialInput(FVector2MaterialInput::read(ar)?)
+            }
+            StructType::MovieSceneSequenceID => {
+                StructValue::MovieSceneSequenceID(FMovieSceneSequenceID::read(ar)?)
+            }
+            StructType::MovieSceneTrackIdentifier => {
+                StructValue::MovieSceneTrackIdentifier(FMovieSceneTrackIdentifier::read(ar)?)
+            }
+            StructType::MovieSceneEvaluationKey => {
+                StructValue::MovieSceneEvaluationKey(FMovieSceneEvaluationKey::read(ar)?)
+            }
+            StructType::MovieSceneEvaluationFieldEntityTree => {
+                StructValue::MovieSceneEvaluationFieldEntityTree(
+                    FMovieSceneEvaluationFieldEntityTree::read(ar)?,
+                )
+            }
+            StructType::FontData => StructValue::FontData(FFontData::read(ar)?),
+            StructType::ClothLODDataCommon => {
+                StructValue::ClothLODDataCommon(FClothLODDataCommon::read(ar)?)
+            }
+            StructType::NiagaraVariable => {
+                StructValue::NiagaraVariable(FNiagaraVariable::read(ar)?)
+            }
+            StructType::NiagaraVariableBase => {
+                StructValue::NiagaraVariableBase(FNiagaraVariableBase::read(ar)?)
+            }
+            StructType::NiagaraVariableWithOffset => {
+                StructValue::NiagaraVariableWithOffset(FNiagaraVariableWithOffset::read(ar)?)
+            }
+            StructType::NiagaraDataInterfaceGeneratedFunction => {
+                StructValue::NiagaraDataInterfaceGeneratedFunction(
+                    FNiagaraDataInterfaceGeneratedFunction::read(ar)?,
+                )
+            }
+            StructType::NiagaraDataInterfaceGPUParamInfo => {
+                StructValue::NiagaraDataInterfaceGPUParamInfo(
+                    FNiagaraDataInterfaceGPUParamInfo::read(ar)?,
+                )
+            }
             StructType::Raw(_) => unreachable!("should be handled at property level"),
             StructType::Struct(_) => StructValue::Struct(read_properties_until_none(ar)?),
         })
@@ -2766,6 +3783,27 @@ impl<T: ArchiveType> StructValue<T> {
             StructValue::RichCurveKey(v) => v.write(ar)?,
             StructValue::SkeletalMeshSamplingLODBuiltData(v) => v.write(ar)?,
             StructValue::PerPlatformFloat(v) => v.write(ar)?,
+            StructValue::MovieSceneFrameRange(v) => v.write(ar)?,
+            StructValue::MovieSceneFloatChannel(v) => v.write(ar)?,
+            StructValue::FrameNumber(v) => v.write(ar)?,
+            StructValue::ExpressionInput(v) => v.write(ar)?,
+            StructValue::MaterialAttributesInput(v) => v.write(ar)?,
+            StructValue::ColorMaterialInput(v) => v.write(ar)?,
+            StructValue::ScalarMaterialInput(v) => v.write(ar)?,
+            StructValue::ShadingModelMaterialInput(v) => v.write(ar)?,
+            StructValue::VectorMaterialInput(v) => v.write(ar)?,
+            StructValue::Vector2MaterialInput(v) => v.write(ar)?,
+            StructValue::MovieSceneSequenceID(v) => v.write(ar)?,
+            StructValue::MovieSceneTrackIdentifier(v) => v.write(ar)?,
+            StructValue::MovieSceneEvaluationKey(v) => v.write(ar)?,
+            StructValue::MovieSceneEvaluationFieldEntityTree(v) => v.write(ar)?,
+            StructValue::FontData(v) => v.write(ar)?,
+            StructValue::ClothLODDataCommon(v) => v.write(ar)?,
+            StructValue::NiagaraVariable(v) => v.write(ar)?,
+            StructValue::NiagaraVariableBase(v) => v.write(ar)?,
+            StructValue::NiagaraVariableWithOffset(v) => v.write(ar)?,
+            StructValue::NiagaraDataInterfaceGeneratedFunction(v) => v.write(ar)?,
+            StructValue::NiagaraDataInterfaceGPUParamInfo(v) => v.write(ar)?,
             StructValue::Raw(v) => ar.write_all(v)?,
             StructValue::Struct(v) => write_properties_none_terminated(ar, v)?,
         }
@@ -2781,20 +3819,29 @@ impl<T: ArchiveType> ValueVec<T> {
         count: u32,
     ) -> Result<ValueVec<T>> {
         Ok(match t {
-            PropertyType::IntProperty => {
-                ValueVec::Int(read_array(count, ar, |r| Ok(r.read_i32::<LE>()?))?)
+            PropertyType::Int8Property => {
+                ValueVec::Int8(read_array(count, ar, |r| Ok(r.read_i8()?))?)
             }
             PropertyType::Int16Property => {
                 ValueVec::Int16(read_array(count, ar, |r| Ok(r.read_i16::<LE>()?))?)
             }
+            PropertyType::IntProperty => {
+                ValueVec::Int(read_array(count, ar, |r| Ok(r.read_i32::<LE>()?))?)
+            }
             PropertyType::Int64Property => {
                 ValueVec::Int64(read_array(count, ar, |r| Ok(r.read_i64::<LE>()?))?)
+            }
+            PropertyType::UInt8Property => {
+                ValueVec::UInt8(read_array(count, ar, |r| Ok(r.read_u8()?))?)
             }
             PropertyType::UInt16Property => {
                 ValueVec::UInt16(read_array(count, ar, |r| Ok(r.read_u16::<LE>()?))?)
             }
             PropertyType::UInt32Property => {
                 ValueVec::UInt32(read_array(count, ar, |r| Ok(r.read_u32::<LE>()?))?)
+            }
+            PropertyType::UInt64Property => {
+                ValueVec::UInt64(read_array(count, ar, |r| Ok(r.read_u64::<LE>()?))?)
             }
             PropertyType::FloatProperty => {
                 ValueVec::Float(read_array(count, ar, |r| Ok(r.read_f32::<LE>()?.into()))?)
@@ -2829,7 +3876,7 @@ impl<T: ArchiveType> ValueVec<T> {
             PropertyType::NameProperty => {
                 ValueVec::Name(read_array(count, ar, |r| r.read_string())?)
             }
-            PropertyType::ObjectProperty => {
+            PropertyType::ObjectProperty | PropertyType::InterfaceProperty => {
                 ValueVec::Object(read_array(count, ar, |r| r.read_object_ref())?)
             }
             _ => return Err(Error::UnknownVecType(format!("{t:?}"))),
@@ -3122,7 +4169,7 @@ pub enum Property<T: ArchiveType = SaveGameArchiveType> {
     Byte(Byte),
     Enum(Enum),
     Str(String),
-    FieldPath(FieldPath),
+    FieldPath(FieldPath<T>),
     SoftObject(T::SoftObjectPath),
     Name(String),
     Object(T::ObjectRef),
@@ -3348,7 +4395,9 @@ impl<T: ArchiveType> Property<T> {
                 PropertyType::SoftObjectProperty => {
                     Property::SoftObject(ar.read_soft_object_path()?)
                 }
-                PropertyType::ObjectProperty => Property::Object(ar.read_object_ref()?),
+                PropertyType::ObjectProperty | PropertyType::InterfaceProperty => {
+                    Property::Object(ar.read_object_ref()?)
+                }
                 PropertyType::TextProperty => Property::Text(Text::read(ar)?),
             },
         })

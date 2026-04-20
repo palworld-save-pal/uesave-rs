@@ -16,6 +16,9 @@ pub trait ArchiveType: Clone + PartialEq + std::fmt::Debug + Default + serde::Se
         + serde::Serialize
         + for<'de> serde::Deserialize<'de>;
 
+    /// Returns true if the given object reference is the null reference.
+    fn is_null_object_ref(object_ref: &Self::ObjectRef) -> bool;
+
     /// The type used to represent soft object paths in this archive format.
     /// - For save games: `SoftObjectPath` enum with asset paths
     /// - For assets: Could be different representation
@@ -120,6 +123,10 @@ pub struct SaveGameArchiveType;
 impl ArchiveType for SaveGameArchiveType {
     type ObjectRef = String;
     type SoftObjectPath = crate::SoftObjectPath;
+
+    fn is_null_object_ref(object_ref: &Self::ObjectRef) -> bool {
+        object_ref.is_empty() || object_ref == "None"
+    }
 }
 
 impl<R> ArchiveReader for SaveGameArchive<R>

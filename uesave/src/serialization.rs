@@ -1,12 +1,136 @@
 use crate::{
-    Properties, Property, PropertyKey, PropertySchemas, PropertyTagDataPartial, Root, Save,
-    SoftObjectPath, StructType, StructValue, ValueVec,
+    FClothLODDataCommon, FMeshToMeshVertData, FNiagaraVariable, FNiagaraVariableBase,
+    FNiagaraVariableWithOffset, Properties, Property, PropertyKey, PropertySchemas,
+    PropertyTagDataPartial, Root, Save, SoftObjectPath, StructType, StructValue, ValueVec,
 };
 use serde::{
     de::{DeserializeSeed, MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
 };
 use std::fmt;
+
+/// Generates one or more `DeserializeSeed`s that thread `PropertySchemas` + a
+/// path prefix through to any field marked `= "segment"`, which is seeded as a
+/// nested `Properties` at `{parent_path}.{segment}`. Unmarked fields use plain
+/// `Deserialize`.
+macro_rules! properties_seeds {
+    (
+        $(
+            $value:ident => $seed:ident {
+                $( $field:ident : $ty:ty $( = $segment:literal )? ),+ $(,)?
+            }
+        )+
+    ) => {
+        $(
+            struct $seed<'a> {
+                path: &'a str,
+                schemas: &'a PropertySchemas,
+            }
+
+            impl<'de, 'a> DeserializeSeed<'de> for $seed<'a> {
+                type Value = $value;
+
+                fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+                where
+                    D: Deserializer<'de>,
+                {
+                    deserializer.deserialize_map(self)
+                }
+            }
+
+            impl<'de, 'a> Visitor<'de> for $seed<'a> {
+                type Value = $value;
+
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str(concat!(stringify!($value), " map"))
+                }
+
+                fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+                where
+                    A: MapAccess<'de>,
+                {
+                    let __path = self.path;
+                    let __schemas = self.schemas;
+                    $( let mut $field: Option<$ty> = None; )+
+
+                    while let Some(__key) = map.next_key::<String>()? {
+                        match __key.as_str() {
+                            $(
+                                stringify!($field) => {
+                                    $field = Some(properties_seeds!(
+                                        @read __path, __schemas, map $(, $segment)?
+                                    ));
+                                }
+                            )+
+                            other => {
+                                return Err(serde::de::Error::unknown_field(
+                                    other,
+                                    &[$( stringify!($field) ),+],
+                                ))
+                            }
+                        }
+                    }
+
+                    Ok($value {
+                        $(
+                            $field: $field.ok_or_else(|| {
+                                serde::de::Error::missing_field(stringify!($field))
+                            })?,
+                        )+
+                    })
+                }
+            }
+        )+
+    };
+
+    (@read $path:ident, $schemas:ident, $m:ident, $segment:literal) => {{
+        let __sub_path = if $path.is_empty() {
+            String::from($segment)
+        } else if $segment.is_empty() {
+            $path.to_string()
+        } else {
+            format!("{}.{}", $path, $segment)
+        };
+        $m.next_value_seed(PropertiesSeed {
+            path: &__sub_path,
+            schemas: $schemas,
+        })?
+    }};
+
+    (@read $path:ident, $schemas:ident, $m:ident) => {{
+        $m.next_value()?
+    }};
+}
+
+properties_seeds! {
+    Root => RootSeed {
+        save_game_type: String,
+        properties: Properties = "",
+    }
+
+    FClothLODDataCommon => ClothLODDataCommonSeed {
+        properties: Properties = "properties",
+        transition_up_skin_data: Vec<FMeshToMeshVertData>,
+        transition_down_skin_data: Vec<FMeshToMeshVertData>,
+    }
+
+    FNiagaraVariableBase => NiagaraVariableBaseSeed {
+        name: String,
+        type_def: Properties = "type_def",
+    }
+
+    FNiagaraVariable => NiagaraVariableSeed {
+        name: String,
+        type_def: Properties = "type_def",
+        var_data: Vec<u8>,
+    }
+
+    FNiagaraVariableWithOffset => NiagaraVariableWithOffsetSeed {
+        name: String,
+        type_def: Properties = "type_def",
+        offset: i32,
+    }
+}
 
 struct PropertySeed<'a> {
     tag: &'a PropertyTagDataPartial,
@@ -49,7 +173,7 @@ impl<'de, 'a> DeserializeSeed<'de> for PropertySeed<'a> {
                     Ok(Property::Name(String::deserialize(deserializer)?))
                 }
                 PropertyType::StrProperty => Ok(Property::Str(String::deserialize(deserializer)?)),
-                PropertyType::ObjectProperty => {
+                PropertyType::ObjectProperty | PropertyType::InterfaceProperty => {
                     Ok(Property::Object(String::deserialize(deserializer)?))
                 }
                 PropertyType::TextProperty => {
@@ -206,6 +330,91 @@ impl<'de, 'a> DeserializeSeed<'de> for StructValueSeed<'a> {
             StructType::PerPlatformFloat => Ok(StructValue::PerPlatformFloat(
                 crate::FPerPlatformFloat::deserialize(deserializer)?,
             )),
+            StructType::MovieSceneFrameRange => Ok(StructValue::MovieSceneFrameRange(
+                crate::FMovieSceneFrameRange::deserialize(deserializer)?,
+            )),
+            StructType::MovieSceneFloatChannel => Ok(StructValue::MovieSceneFloatChannel(
+                crate::FMovieSceneFloatChannel::deserialize(deserializer)?,
+            )),
+            StructType::FrameNumber => Ok(StructValue::FrameNumber(
+                crate::FFrameNumber::deserialize(deserializer)?,
+            )),
+            StructType::ExpressionInput => Ok(StructValue::ExpressionInput(
+                crate::FExpressionInput::deserialize(deserializer)?,
+            )),
+            StructType::MaterialAttributesInput => Ok(StructValue::MaterialAttributesInput(
+                crate::FExpressionInput::deserialize(deserializer)?,
+            )),
+            StructType::ColorMaterialInput => Ok(StructValue::ColorMaterialInput(
+                crate::FColorMaterialInput::deserialize(deserializer)?,
+            )),
+            StructType::ScalarMaterialInput => Ok(StructValue::ScalarMaterialInput(
+                crate::FScalarMaterialInput::deserialize(deserializer)?,
+            )),
+            StructType::ShadingModelMaterialInput => Ok(StructValue::ShadingModelMaterialInput(
+                crate::FShadingModelMaterialInput::deserialize(deserializer)?,
+            )),
+            StructType::VectorMaterialInput => Ok(StructValue::VectorMaterialInput(
+                crate::FVectorMaterialInput::deserialize(deserializer)?,
+            )),
+            StructType::Vector2MaterialInput => Ok(StructValue::Vector2MaterialInput(
+                crate::FVector2MaterialInput::deserialize(deserializer)?,
+            )),
+            StructType::MovieSceneSequenceID => Ok(StructValue::MovieSceneSequenceID(
+                crate::FMovieSceneSequenceID::deserialize(deserializer)?,
+            )),
+            StructType::MovieSceneTrackIdentifier => Ok(StructValue::MovieSceneTrackIdentifier(
+                crate::FMovieSceneTrackIdentifier::deserialize(deserializer)?,
+            )),
+            StructType::MovieSceneEvaluationKey => Ok(StructValue::MovieSceneEvaluationKey(
+                crate::FMovieSceneEvaluationKey::deserialize(deserializer)?,
+            )),
+            StructType::MovieSceneEvaluationFieldEntityTree => {
+                Ok(StructValue::MovieSceneEvaluationFieldEntityTree(
+                    crate::FMovieSceneEvaluationFieldEntityTree::deserialize(deserializer)?,
+                ))
+            }
+            StructType::NiagaraDataInterfaceGeneratedFunction => {
+                Ok(StructValue::NiagaraDataInterfaceGeneratedFunction(
+                    crate::FNiagaraDataInterfaceGeneratedFunction::deserialize(deserializer)?,
+                ))
+            }
+            StructType::NiagaraDataInterfaceGPUParamInfo => {
+                Ok(StructValue::NiagaraDataInterfaceGPUParamInfo(
+                    crate::FNiagaraDataInterfaceGPUParamInfo::deserialize(deserializer)?,
+                ))
+            }
+            StructType::FontData => Ok(StructValue::FontData(crate::FFontData::deserialize(
+                deserializer,
+            )?)),
+            StructType::ClothLODDataCommon => Ok(StructValue::ClothLODDataCommon(
+                ClothLODDataCommonSeed {
+                    path: self.path,
+                    schemas: self.schemas,
+                }
+                .deserialize(deserializer)?,
+            )),
+            StructType::NiagaraVariable => Ok(StructValue::NiagaraVariable(
+                NiagaraVariableSeed {
+                    path: self.path,
+                    schemas: self.schemas,
+                }
+                .deserialize(deserializer)?,
+            )),
+            StructType::NiagaraVariableBase => Ok(StructValue::NiagaraVariableBase(
+                NiagaraVariableBaseSeed {
+                    path: self.path,
+                    schemas: self.schemas,
+                }
+                .deserialize(deserializer)?,
+            )),
+            StructType::NiagaraVariableWithOffset => Ok(StructValue::NiagaraVariableWithOffset(
+                NiagaraVariableWithOffsetSeed {
+                    path: self.path,
+                    schemas: self.schemas,
+                }
+                .deserialize(deserializer)?,
+            )),
             StructType::Struct(_) => {
                 let props = PropertiesSeed {
                     path: self.path,
@@ -216,6 +425,46 @@ impl<'de, 'a> DeserializeSeed<'de> for StructValueSeed<'a> {
             }
             StructType::Raw(_) => Ok(StructValue::Raw(Vec::<u8>::deserialize(deserializer)?)),
         }
+    }
+}
+
+struct StructVecSeed<'a> {
+    struct_type: &'a StructType,
+    path: &'a str,
+    schemas: &'a PropertySchemas,
+}
+
+impl<'de, 'a> DeserializeSeed<'de> for StructVecSeed<'a> {
+    type Value = Vec<StructValue>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de, 'a> Visitor<'de> for StructVecSeed<'a> {
+    type Value = Vec<StructValue>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("array or set of structs")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut vec = Vec::new();
+        while let Some(elem) = seq.next_element_seed(StructValueSeed {
+            struct_type: self.struct_type,
+            path: self.path,
+            schemas: self.schemas,
+        })? {
+            vec.push(elem);
+        }
+        Ok(vec)
     }
 }
 
@@ -234,40 +483,12 @@ impl<'de, 'a> DeserializeSeed<'de> for ValueVecSeed<'a> {
     {
         match self.tag {
             PropertyTagDataPartial::Struct { struct_type, .. } => {
-                struct StructVecVisitor<'a> {
-                    struct_type: &'a StructType,
-                    path: &'a str,
-                    schemas: &'a PropertySchemas,
-                }
-
-                impl<'de, 'a> Visitor<'de> for StructVecVisitor<'a> {
-                    type Value = Vec<StructValue>;
-
-                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                        formatter.write_str("array or set of structs")
-                    }
-
-                    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-                    where
-                        A: SeqAccess<'de>,
-                    {
-                        let mut vec = Vec::new();
-                        while let Some(elem) = seq.next_element_seed(StructValueSeed {
-                            struct_type: self.struct_type,
-                            path: self.path,
-                            schemas: self.schemas,
-                        })? {
-                            vec.push(elem);
-                        }
-                        Ok(vec)
-                    }
-                }
-
-                let structs = deserializer.deserialize_seq(StructVecVisitor {
+                let structs = StructVecSeed {
                     struct_type,
                     path: self.path,
                     schemas: self.schemas,
-                })?;
+                }
+                .deserialize(deserializer)?;
                 Ok(ValueVec::Struct(structs))
             }
             PropertyTagDataPartial::Other(pt) => {
@@ -312,7 +533,7 @@ impl<'de, 'a> DeserializeSeed<'de> for ValueVecSeed<'a> {
                     PropertyType::NameProperty => {
                         Ok(ValueVec::Name(Vec::<String>::deserialize(deserializer)?))
                     }
-                    PropertyType::ObjectProperty => {
+                    PropertyType::ObjectProperty | PropertyType::InterfaceProperty => {
                         Ok(ValueVec::Object(Vec::<String>::deserialize(deserializer)?))
                     }
                     PropertyType::SoftObjectProperty => {
@@ -370,43 +591,31 @@ impl<'de, 'a> DeserializeSeed<'de> for MapEntriesSeed<'a> {
     where
         D: Deserializer<'de>,
     {
-        struct MapEntriesVisitor<'a> {
-            key_type: &'a PropertyTagDataPartial,
-            value_type: &'a PropertyTagDataPartial,
-            path: &'a str,
-            schemas: &'a PropertySchemas,
-        }
+        deserializer.deserialize_seq(self)
+    }
+}
 
-        impl<'de, 'a> Visitor<'de> for MapEntriesVisitor<'a> {
-            type Value = Vec<crate::MapEntry>;
+impl<'de, 'a> Visitor<'de> for MapEntriesSeed<'a> {
+    type Value = Vec<crate::MapEntry>;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("array of map entries")
-            }
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("array of map entries")
+    }
 
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
-                let mut vec = Vec::new();
-                while let Some(elem) = seq.next_element_seed(MapEntrySeed {
-                    key_type: self.key_type,
-                    value_type: self.value_type,
-                    path: self.path,
-                    schemas: self.schemas,
-                })? {
-                    vec.push(elem);
-                }
-                Ok(vec)
-            }
-        }
-
-        deserializer.deserialize_seq(MapEntriesVisitor {
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut vec = Vec::new();
+        while let Some(elem) = seq.next_element_seed(MapEntrySeed {
             key_type: self.key_type,
             value_type: self.value_type,
             path: self.path,
             schemas: self.schemas,
-        })
+        })? {
+            vec.push(elem);
+        }
+        Ok(vec)
     }
 }
 
@@ -424,6 +633,21 @@ impl<'de, 'a> DeserializeSeed<'de> for MapEntrySeed<'a> {
     where
         D: Deserializer<'de>,
     {
+        deserializer.deserialize_struct("MapEntry", &["key", "value"], self)
+    }
+}
+
+impl<'de, 'a> Visitor<'de> for MapEntrySeed<'a> {
+    type Value = crate::MapEntry;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("map entry with key and value fields")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
         #[derive(Deserialize)]
         #[serde(field_identifier, rename_all = "lowercase")]
         enum Field {
@@ -431,63 +655,32 @@ impl<'de, 'a> DeserializeSeed<'de> for MapEntrySeed<'a> {
             Value,
         }
 
-        struct MapEntryVisitor<'a> {
-            key_type: &'a PropertyTagDataPartial,
-            value_type: &'a PropertyTagDataPartial,
-            path: &'a str,
-            schemas: &'a PropertySchemas,
-        }
+        let mut key = None;
+        let mut value = None;
 
-        impl<'de, 'a> Visitor<'de> for MapEntryVisitor<'a> {
-            type Value = crate::MapEntry;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("map entry with key and value fields")
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut key = None;
-                let mut value = None;
-
-                while let Some(field) = map.next_key()? {
-                    match field {
-                        Field::Key => {
-                            key = Some(map.next_value_seed(PropertySeed {
-                                tag: self.key_type,
-                                path: self.path,
-                                schemas: self.schemas,
-                            })?);
-                        }
-                        Field::Value => {
-                            value = Some(map.next_value_seed(PropertySeed {
-                                tag: self.value_type,
-                                path: self.path,
-                                schemas: self.schemas,
-                            })?);
-                        }
-                    }
+        while let Some(field) = map.next_key()? {
+            match field {
+                Field::Key => {
+                    key = Some(map.next_value_seed(PropertySeed {
+                        tag: self.key_type,
+                        path: self.path,
+                        schemas: self.schemas,
+                    })?);
                 }
-
-                let key = key.ok_or_else(|| serde::de::Error::missing_field("key"))?;
-                let value = value.ok_or_else(|| serde::de::Error::missing_field("value"))?;
-
-                Ok(crate::MapEntry { key, value })
+                Field::Value => {
+                    value = Some(map.next_value_seed(PropertySeed {
+                        tag: self.value_type,
+                        path: self.path,
+                        schemas: self.schemas,
+                    })?);
+                }
             }
         }
 
-        deserializer.deserialize_struct(
-            "MapEntry",
-            &["key", "value"],
-            MapEntryVisitor {
-                key_type: self.key_type,
-                value_type: self.value_type,
-                path: self.path,
-                schemas: self.schemas,
-            },
-        )
+        let key = key.ok_or_else(|| serde::de::Error::missing_field("key"))?;
+        let value = value.ok_or_else(|| serde::de::Error::missing_field("value"))?;
+
+        Ok(crate::MapEntry { key, value })
     }
 }
 
@@ -503,124 +696,44 @@ impl<'de, 'a> DeserializeSeed<'de> for PropertiesSeed<'a> {
     where
         D: Deserializer<'de>,
     {
-        struct PropertiesVisitor<'a> {
-            path: &'a str,
-            schemas: &'a PropertySchemas,
-        }
-
-        impl<'de, 'a> Visitor<'de> for PropertiesVisitor<'a> {
-            type Value = Properties;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("properties map")
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut properties = indexmap::IndexMap::new();
-
-                while let Some(key) = map.next_key::<PropertyKey>()? {
-                    let prop_path = if self.path.is_empty() {
-                        key.1.to_string()
-                    } else {
-                        format!("{}.{}", self.path, key.1)
-                    };
-
-                    let tag = self.schemas.schemas().get(&prop_path).ok_or_else(|| {
-                        serde::de::Error::custom(format!("No schema for property: {}", prop_path))
-                    })?;
-
-                    let prop = map.next_value_seed(PropertySeed {
-                        tag: &tag.data,
-                        path: &prop_path,
-                        schemas: self.schemas,
-                    })?;
-
-                    properties.insert(key, prop);
-                }
-
-                Ok(Properties(properties))
-            }
-        }
-
-        deserializer.deserialize_map(PropertiesVisitor {
-            path: self.path,
-            schemas: self.schemas,
-        })
+        deserializer.deserialize_map(self)
     }
 }
 
-struct RootSeed<'a> {
-    schemas: &'a PropertySchemas,
-}
+impl<'de, 'a> Visitor<'de> for PropertiesSeed<'a> {
+    type Value = Properties;
 
-impl<'de, 'a> DeserializeSeed<'de> for RootSeed<'a> {
-    type Value = Root;
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("properties map")
+    }
 
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
-        D: Deserializer<'de>,
+        A: MapAccess<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(field_identifier, rename_all = "snake_case")]
-        enum Field {
-            SaveGameType,
-            Properties,
-        }
+        let mut properties = indexmap::IndexMap::new();
 
-        struct RootVisitorWithSchemas<'a> {
-            schemas: &'a PropertySchemas,
-        }
+        while let Some(key) = map.next_key::<PropertyKey>()? {
+            let prop_path = if self.path.is_empty() {
+                key.1.to_string()
+            } else {
+                format!("{}.{}", self.path, key.1)
+            };
 
-        impl<'de, 'a> Visitor<'de> for RootVisitorWithSchemas<'a> {
-            type Value = Root;
+            let tag = self.schemas.schemas().get(&prop_path).ok_or_else(|| {
+                serde::de::Error::custom(format!("No schema for property: {}", prop_path))
+            })?;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("Root struct")
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut save_game_type = None;
-                let mut properties = None;
-
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        Field::SaveGameType => {
-                            save_game_type = Some(map.next_value()?);
-                        }
-                        Field::Properties => {
-                            properties = Some(map.next_value_seed(PropertiesSeed {
-                                path: "",
-                                schemas: self.schemas,
-                            })?);
-                        }
-                    }
-                }
-
-                let save_game_type = save_game_type
-                    .ok_or_else(|| serde::de::Error::missing_field("save_game_type"))?;
-                let properties =
-                    properties.ok_or_else(|| serde::de::Error::missing_field("properties"))?;
-
-                Ok(Root {
-                    save_game_type,
-                    properties,
-                })
-            }
-        }
-
-        deserializer.deserialize_struct(
-            "Root",
-            &["save_game_type", "properties"],
-            RootVisitorWithSchemas {
+            let prop = map.next_value_seed(PropertySeed {
+                tag: &tag.data,
+                path: &prop_path,
                 schemas: self.schemas,
-            },
-        )
+            })?;
+
+            properties.insert(key, prop);
+        }
+
+        Ok(Properties(properties))
     }
 }
 
@@ -672,6 +785,7 @@ impl<'de> Deserialize<'de> for Save {
                             })?;
 
                             root = Some(map.next_value_seed(RootSeed {
+                                path: "",
                                 schemas: schemas_ref,
                             })?);
                         }
