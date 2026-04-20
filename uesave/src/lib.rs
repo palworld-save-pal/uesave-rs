@@ -36,11 +36,10 @@ mod serialization;
 mod tests;
 
 pub use archive::{ArchiveReader, ArchiveType, ArchiveWriter, SaveGameArchiveType};
-pub use context::{PropertySchemas, Scope, Types};
+pub use context::{PropertySchemas, SaveGameArchive, Scope, Types};
 pub use error::{Error, ParseError};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-use context::SaveGameArchive;
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -4473,8 +4472,8 @@ impl CustomFormatData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageVersion {
-    ue4: u32,
-    ue5: Option<u32>,
+    pub ue4: u32,
+    pub ue5: Option<u32>,
 }
 
 pub trait VersionInfo {

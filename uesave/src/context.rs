@@ -82,7 +82,7 @@ impl Scope {
 }
 
 #[derive(Debug)]
-pub(crate) struct SaveGameArchive<S> {
+pub struct SaveGameArchive<S> {
     pub(crate) stream: S,
     pub(crate) version: Option<Header>,
     pub(crate) types: Rc<Types>,
@@ -111,11 +111,11 @@ impl<W: Write + Seek> Write for SaveGameArchive<W> {
 }
 
 impl<S> SaveGameArchive<S> {
-    pub(crate) fn run<F, T>(stream: S, f: F) -> T
-    where
-        F: FnOnce(&mut SaveGameArchive<S>) -> T,
-    {
-        f(&mut SaveGameArchive {
+    /// Construct a new archive around `stream`. The version (Header) must be set
+    /// via [`set_version`](Self::set_version) before reading any property data,
+    /// since property serialization depends on engine/package versions.
+    pub fn new(stream: S) -> Self {
+        SaveGameArchive {
             stream,
             version: None,
             types: Rc::new(Types::new()),
@@ -123,7 +123,13 @@ impl<S> SaveGameArchive<S> {
             log: false,
             error_to_raw: false,
             schemas: Rc::new(RefCell::new(PropertySchemas::new())),
-        })
+        }
+    }
+    pub(crate) fn run<F, T>(stream: S, f: F) -> T
+    where
+        F: FnOnce(&mut SaveGameArchive<S>) -> T,
+    {
+        f(&mut SaveGameArchive::new(stream))
     }
     fn path(&self) -> String {
         self.scope.path()
@@ -131,7 +137,7 @@ impl<S> SaveGameArchive<S> {
     fn get_type(&self) -> Option<&StructType> {
         self.types.types.get(&self.path())
     }
-    pub(crate) fn set_version(&mut self, version: Header) {
+    pub fn set_version(&mut self, version: Header) {
         self.version = Some(version);
     }
     pub(crate) fn version(&self) -> &Header {
