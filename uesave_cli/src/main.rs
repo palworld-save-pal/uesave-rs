@@ -154,30 +154,49 @@ pub fn main() -> Result<()> {
                 }
             }
 
-            let mut input = std::io::Cursor::new(fs::read(path)?);
-            let mut output = std::io::Cursor::new(vec![]);
+            let write_debug = |name: &str, data: &[u8]| -> Result<()> {
+                if action.debug {
+                    fs::write(name, data)?;
+                }
+                Ok(())
+            };
+
+            let input = fs::read(path)?;
+            write_debug("input.sav", &input)?;
 
             let sr = SaveReader::new()
                 .log(!action.no_warn)
                 .error_to_raw(true)
                 .types(types);
+            let mut reader = Cursor::new(&input);
             #[cfg(feature = "tracing")]
             let save = if action.trace {
-                ser_hex::read("trace.json", &mut input, |reader| sr.read(reader))?
+                ser_hex::read("trace.json", &mut reader, |r| sr.read(r))?
             } else {
-                sr.read(&mut input)?
+                sr.read(&mut reader)?
             };
             #[cfg(not(feature = "tracing"))]
-            let save = sr.read(&mut input)?;
-            save.write(&mut output)?;
+            let save = sr.read(&mut reader)?;
 
-            let (input, output) = (input.into_inner(), output.into_inner());
+            let mut output = vec![];
+            save.write(&mut output)?;
+            write_debug("output.sav", &output)?;
             if input != output {
-                if action.debug {
-                    fs::write("input.sav", input)?;
-                    fs::write("output.sav", output)?;
-                }
                 return Err(anyhow!("Resave did not match"));
+            }
+
+            let input_json = serde_json::to_vec_pretty(&save)?;
+            write_debug("input.json", &input_json)?;
+
+            let save_from_json: Save = serde_json::from_slice(&input_json)?;
+            let output_json = serde_json::to_vec_pretty(&save_from_json)?;
+            write_debug("output.json", &output_json)?;
+
+            let mut output = vec![];
+            save_from_json.write(&mut output)?;
+            write_debug("output.sav", &output)?;
+            if input != output {
+                return Err(anyhow!("JSON round trip did not match"));
             }
             println!("Resave successful");
         }
