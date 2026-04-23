@@ -146,6 +146,9 @@ impl<'de, 'a> DeserializeSeed<'de> for PropertySeed<'a> {
         D: Deserializer<'de>,
     {
         use crate::PropertyType;
+        if self.tag.has_raw_struct() {
+            return Ok(Property::Raw(Vec::<u8>::deserialize(deserializer)?));
+        }
         match &self.tag {
             PropertyTagDataPartial::Other(pt) => match pt {
                 PropertyType::BoolProperty => Ok(Property::Bool(bool::deserialize(deserializer)?)),

@@ -687,21 +687,23 @@ impl PropertyTagDataPartial {
             Self::Other(t) => PropertyTagDataFull::Other(t),
         }
     }
+    pub(crate) fn has_raw_struct(&self) -> bool {
+        match self {
+            Self::Array(inner) => inner.has_raw_struct(),
+            Self::Struct { struct_type, .. } => struct_type.raw(),
+            Self::Set { key_type } => key_type.has_raw_struct(),
+            Self::Map {
+                key_type,
+                value_type,
+            } => key_type.has_raw_struct() || value_type.has_raw_struct(),
+            Self::Byte(_) => false,
+            Self::Enum(_, _) => false,
+            Self::Other(_) => false,
+        }
+    }
 }
 
 impl PropertyTagDataFull {
-    fn basic_type(&self) -> PropertyType {
-        match self {
-            Self::Array(_) => PropertyType::ArrayProperty,
-            Self::Struct { .. } => PropertyType::StructProperty,
-            Self::Set { .. } => PropertyType::SetProperty,
-            Self::Map { .. } => PropertyType::MapProperty,
-            Self::Byte(_) => PropertyType::ByteProperty,
-            Self::Enum(_, _) => PropertyType::EnumProperty,
-            Self::Bool(_) => PropertyType::BoolProperty,
-            Self::Other(property_type) => *property_type,
-        }
-    }
     fn has_raw_struct(&self) -> bool {
         match self {
             Self::Array(inner) => inner.has_raw_struct(),
@@ -715,6 +717,18 @@ impl PropertyTagDataFull {
             Self::Enum(_, _) => false,
             Self::Bool(_) => false,
             Self::Other(_) => false,
+        }
+    }
+    fn basic_type(&self) -> PropertyType {
+        match self {
+            Self::Array(_) => PropertyType::ArrayProperty,
+            Self::Struct { .. } => PropertyType::StructProperty,
+            Self::Set { .. } => PropertyType::SetProperty,
+            Self::Map { .. } => PropertyType::MapProperty,
+            Self::Byte(_) => PropertyType::ByteProperty,
+            Self::Enum(_, _) => PropertyType::EnumProperty,
+            Self::Bool(_) => PropertyType::BoolProperty,
+            Self::Other(property_type) => *property_type,
         }
     }
     fn from_type(inner_type: PropertyType, struct_type: Option<StructType>) -> Self {
@@ -4467,6 +4481,13 @@ impl<T: ArchiveType> Property<T> {
         tag: PropertyTagFull,
     ) -> Result<(Property<T>, Option<PropertyTagDataFull>)> {
         if tag.data.has_raw_struct() {
+            if ar.log() {
+                eprintln!(
+                    "Warning: Storing property '{}' as raw bytes; tag contains native-serialized struct with no parser: {:?}",
+                    ar.path(),
+                    tag.data,
+                );
+            }
             let mut raw = vec![0; tag.size as usize];
             ar.read_exact(&mut raw)?;
             return Ok((Property::Raw(raw), None));
