@@ -3403,6 +3403,71 @@ pub struct Text {
     flags: u32,
     variant: TextVariant,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i8)]
+pub enum EDateTimeStyle {
+    Default = 0,
+    Short = 1,
+    Medium = 2,
+    Long = 3,
+    Full = 4,
+    Custom = 5,
+}
+impl EDateTimeStyle {
+    fn from_i8(value: i8) -> Result<Self> {
+        Ok(match value {
+            0 => Self::Default,
+            1 => Self::Short,
+            2 => Self::Medium,
+            3 => Self::Long,
+            4 => Self::Full,
+            5 => Self::Custom,
+            _ => {
+                return Err(Error::Other(format!("unknown EDateTimeStyle 0x{value:x}")));
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum ETextTransformType {
+    ToLower = 0,
+    ToUpper = 1,
+}
+impl ETextTransformType {
+    fn from_u8(value: u8) -> Result<Self> {
+        Ok(match value {
+            0 => Self::ToLower,
+            1 => Self::ToUpper,
+            _ => {
+                return Err(Error::Other(format!(
+                    "unknown ETextTransformType 0x{value:x}"
+                )));
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FFormatNamedArgument {
+    name: String,
+    value: FFormatArgumentValue,
+}
+impl FFormatNamedArgument {
+    fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(Self {
+            name: ar.read_string()?,
+            value: FFormatArgumentValue::read(ar)?,
+        })
+    }
+    fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_string(&self.name)?;
+        self.value.write(ar)?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TextVariant {
     // -0x1
@@ -3414,6 +3479,16 @@ pub enum TextVariant {
         namespace: (String, Vec<u8>),
         key: String,
         source_string: String,
+    },
+    // 0x1
+    NamedFormat {
+        format_text: std::boxed::Box<Text>,
+        arguments: Vec<FFormatNamedArgument>,
+    },
+    // 0x2
+    OrderedFormat {
+        format_text: std::boxed::Box<Text>,
+        arguments: Vec<FFormatArgumentValue>,
     },
     // 0x3
     ArgumentFormat {
@@ -3427,17 +3502,57 @@ pub enum TextVariant {
         format_options: Option<FNumberFormattingOptions>,
         culture_name: String,
     },
+    // 0x5
+    AsPercent {
+        source_value: FFormatArgumentValue,
+        format_options: Option<FNumberFormattingOptions>,
+        culture_name: String,
+    },
+    // 0x6
+    AsCurrency {
+        currency_code: String,
+        source_value: FFormatArgumentValue,
+        format_options: Option<FNumberFormattingOptions>,
+        culture_name: String,
+    },
     // 0x7
     AsDate {
         source_date_time: DateTime,
-        date_style: i8, // TODO EDateTimeStyle::Type
+        date_style: EDateTimeStyle,
         time_zone: String,
         culture_name: String,
     },
+    // 0x8
+    AsTime {
+        source_date_time: DateTime,
+        time_style: EDateTimeStyle,
+        time_zone: String,
+        culture_name: String,
+    },
+    // 0x9
+    AsDateTime {
+        source_date_time: DateTime,
+        date_style: EDateTimeStyle,
+        time_style: EDateTimeStyle,
+        /// Only present when `date_style` is `EDateTimeStyle::Custom`.
+        custom_pattern: Option<String>,
+        time_zone: String,
+        culture_name: String,
+    },
+    // 0xa
+    Transform {
+        source_text: std::boxed::Box<Text>,
+        transform_type: ETextTransformType,
+    },
+    // 0xb
     StringTableEntry {
-        // 0xb
         table: String,
         key: String,
+    },
+    // 0xc
+    TextGenerator {
+        generator_type_id: String,
+        generator_contents: Vec<u8>,
     },
 }
 
@@ -3457,6 +3572,14 @@ impl Text {
                 key: read_string(ar)?,
                 source_string: read_string(ar)?,
             }),
+            0x1 => Ok(TextVariant::NamedFormat {
+                format_text: std::boxed::Box::new(Text::read(ar)?),
+                arguments: read_array(ar.read_u32::<LE>()?, ar, FFormatNamedArgument::read)?,
+            }),
+            0x2 => Ok(TextVariant::OrderedFormat {
+                format_text: std::boxed::Box::new(Text::read(ar)?),
+                arguments: read_array(ar.read_u32::<LE>()?, ar, FFormatArgumentValue::read)?,
+            }),
             0x3 => Ok(TextVariant::ArgumentFormat {
                 format_text: std::boxed::Box::new(Text::read(ar)?),
                 arguments: read_array(ar.read_u32::<LE>()?, ar, FFormatArgumentData::read)?,
@@ -3468,17 +3591,67 @@ impl Text {
                     .transpose()?,
                 culture_name: ar.read_string()?,
             }),
+            0x5 => Ok(TextVariant::AsPercent {
+                source_value: FFormatArgumentValue::read(ar)?,
+                format_options: (ar.read_u32::<LE>()? != 0) // bHasFormatOptions
+                    .then(|| FNumberFormattingOptions::read(ar))
+                    .transpose()?,
+                culture_name: ar.read_string()?,
+            }),
+            0x6 => Ok(TextVariant::AsCurrency {
+                currency_code: ar.read_string()?,
+                source_value: FFormatArgumentValue::read(ar)?,
+                format_options: (ar.read_u32::<LE>()? != 0) // bHasFormatOptions
+                    .then(|| FNumberFormattingOptions::read(ar))
+                    .transpose()?,
+                culture_name: ar.read_string()?,
+            }),
             0x7 => Ok(TextVariant::AsDate {
                 source_date_time: ar.read_u64::<LE>()?,
-                date_style: ar.read_i8()?,
+                date_style: EDateTimeStyle::from_i8(ar.read_i8()?)?,
                 time_zone: ar.read_string()?,
                 culture_name: ar.read_string()?,
             }),
-            0xb => Ok({
-                TextVariant::StringTableEntry {
-                    table: ar.read_string()?,
-                    key: read_string(ar)?,
-                }
+            0x8 => Ok(TextVariant::AsTime {
+                source_date_time: ar.read_u64::<LE>()?,
+                time_style: EDateTimeStyle::from_i8(ar.read_i8()?)?,
+                time_zone: ar.read_string()?,
+                culture_name: ar.read_string()?,
+            }),
+            0x9 => {
+                let source_date_time = ar.read_u64::<LE>()?;
+                let date_style = EDateTimeStyle::from_i8(ar.read_i8()?)?;
+                let time_style = EDateTimeStyle::from_i8(ar.read_i8()?)?;
+                let custom_pattern = if date_style == EDateTimeStyle::Custom {
+                    Some(ar.read_string()?)
+                } else {
+                    None
+                };
+                Ok(TextVariant::AsDateTime {
+                    source_date_time,
+                    date_style,
+                    time_style,
+                    custom_pattern,
+                    time_zone: ar.read_string()?,
+                    culture_name: ar.read_string()?,
+                })
+            }
+            0xa => Ok(TextVariant::Transform {
+                source_text: std::boxed::Box::new(Text::read(ar)?),
+                transform_type: ETextTransformType::from_u8(ar.read_u8()?)?,
+            }),
+            0xb => Ok(TextVariant::StringTableEntry {
+                table: ar.read_string()?,
+                key: read_string(ar)?,
+            }),
+            0xc => Ok(TextVariant::TextGenerator {
+                generator_type_id: ar.read_string()?,
+                generator_contents: {
+                    let len = ar.read_u32::<LE>()? as usize;
+                    let mut bytes = vec![0; len];
+                    ar.read_exact(&mut bytes)?;
+                    bytes
+                },
             }),
             _ => Err(Error::Other(format!(
                 "unimplemented variant for FTextHistory 0x{text_history_type:x}"
@@ -3511,6 +3684,28 @@ impl Text {
                 write_string(ar, key)?;
                 write_string(ar, source_string)?;
             }
+            TextVariant::NamedFormat {
+                format_text,
+                arguments,
+            } => {
+                ar.write_i8(0x1)?;
+                format_text.write(ar)?;
+                ar.write_u32::<LE>(arguments.len() as u32)?;
+                for a in arguments {
+                    a.write(ar)?;
+                }
+            }
+            TextVariant::OrderedFormat {
+                format_text,
+                arguments,
+            } => {
+                ar.write_i8(0x2)?;
+                format_text.write(ar)?;
+                ar.write_u32::<LE>(arguments.len() as u32)?;
+                for a in arguments {
+                    a.write(ar)?;
+                }
+            }
             TextVariant::ArgumentFormat {
                 format_text,
                 arguments,
@@ -3535,6 +3730,34 @@ impl Text {
                 }
                 ar.write_string(culture_name)?;
             }
+            TextVariant::AsPercent {
+                source_value,
+                format_options,
+                culture_name,
+            } => {
+                ar.write_i8(0x5)?;
+                source_value.write(ar)?;
+                ar.write_u32::<LE>(format_options.is_some() as u32)?;
+                if let Some(format_options) = format_options {
+                    format_options.write(ar)?;
+                }
+                ar.write_string(culture_name)?;
+            }
+            TextVariant::AsCurrency {
+                currency_code,
+                source_value,
+                format_options,
+                culture_name,
+            } => {
+                ar.write_i8(0x6)?;
+                ar.write_string(currency_code)?;
+                source_value.write(ar)?;
+                ar.write_u32::<LE>(format_options.is_some() as u32)?;
+                if let Some(format_options) = format_options {
+                    format_options.write(ar)?;
+                }
+                ar.write_string(culture_name)?;
+            }
             TextVariant::AsDate {
                 source_date_time,
                 date_style,
@@ -3543,14 +3766,66 @@ impl Text {
             } => {
                 ar.write_i8(0x7)?;
                 ar.write_u64::<LE>(*source_date_time)?;
-                ar.write_i8(*date_style)?;
+                ar.write_i8(*date_style as i8)?;
                 ar.write_string(time_zone)?;
                 ar.write_string(culture_name)?;
+            }
+            TextVariant::AsTime {
+                source_date_time,
+                time_style,
+                time_zone,
+                culture_name,
+            } => {
+                ar.write_i8(0x8)?;
+                ar.write_u64::<LE>(*source_date_time)?;
+                ar.write_i8(*time_style as i8)?;
+                ar.write_string(time_zone)?;
+                ar.write_string(culture_name)?;
+            }
+            TextVariant::AsDateTime {
+                source_date_time,
+                date_style,
+                time_style,
+                custom_pattern,
+                time_zone,
+                culture_name,
+            } => {
+                ar.write_i8(0x9)?;
+                ar.write_u64::<LE>(*source_date_time)?;
+                ar.write_i8(*date_style as i8)?;
+                ar.write_i8(*time_style as i8)?;
+                if *date_style == EDateTimeStyle::Custom {
+                    let pattern = custom_pattern.as_deref().ok_or_else(|| {
+                        Error::Other(
+                            "AsDateTime with Custom date_style requires custom_pattern".to_string(),
+                        )
+                    })?;
+                    ar.write_string(pattern)?;
+                }
+                ar.write_string(time_zone)?;
+                ar.write_string(culture_name)?;
+            }
+            TextVariant::Transform {
+                source_text,
+                transform_type,
+            } => {
+                ar.write_i8(0xa)?;
+                source_text.write(ar)?;
+                ar.write_u8(*transform_type as u8)?;
             }
             TextVariant::StringTableEntry { table, key } => {
                 ar.write_i8(0xb)?;
                 ar.write_string(table)?;
                 write_string(ar, key)?;
+            }
+            TextVariant::TextGenerator {
+                generator_type_id,
+                generator_contents,
+            } => {
+                ar.write_i8(0xc)?;
+                ar.write_string(generator_type_id)?;
+                ar.write_u32::<LE>(generator_contents.len() as u32)?;
+                ar.write_all(generator_contents)?;
             }
         }
         Ok(())
