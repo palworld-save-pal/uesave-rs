@@ -4,6 +4,8 @@ use std::io::{stdin, stdout, BufRead, BufReader, BufWriter, Cursor, Write};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 
+use uesave::compression::CompressionFormat;
+use uesave::games::palworld::palworld_types;
 use uesave::{Save, SaveReader, StructType, Types};
 
 #[derive(Parser, Debug)]
@@ -28,6 +30,10 @@ struct ActionToJson {
     ///   -t .EnemiesKilled.Value=Struct
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
+
+    /// Enable Palworld custom property support
+    #[arg(long)]
+    palworld: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -37,6 +43,10 @@ struct ActionFromJson {
 
     #[arg(short, long, default_value = "-")]
     output: String,
+
+    /// Compress the output with Oodle (Palworld PLM format)
+    #[arg(long)]
+    compress_oodle: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -58,6 +68,14 @@ struct ActionEdit {
     ///   -t .EnemiesKilled.Value=Struct
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
+
+    /// Enable Palworld custom property support
+    #[arg(long)]
+    palworld: bool,
+
+    /// Compress the modified save with Oodle (Palworld PLM format)
+    #[arg(long)]
+    compress_oodle: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -122,7 +140,11 @@ pub fn main() -> Result<()> {
 
     match args.action {
         Action::ToJson(action) => {
-            let mut types = Types::new();
+            let mut types = if action.palworld {
+                palworld_types()
+            } else {
+                Types::new()
+            };
             for (path, t) in action.r#type {
                 types.add(path, t);
             }
@@ -136,7 +158,11 @@ pub fn main() -> Result<()> {
         }
         Action::FromJson(io) => {
             let save: Save = serde_json::from_reader(&mut input(&io.input)?)?;
-            save.write(&mut output(&io.output)?)?;
+            if io.compress_oodle {
+                save.write_compressed(&mut output(&io.output)?, CompressionFormat::Oodle)?;
+            } else {
+                save.write(&mut output(&io.output)?)?;
+            }
         }
         Action::TestResave(action) => {
             let mut types = Types::new();
@@ -201,7 +227,11 @@ pub fn main() -> Result<()> {
             println!("Resave successful");
         }
         Action::Edit(action) => {
-            let mut types = Types::new();
+            let mut types = if action.palworld {
+                palworld_types()
+            } else {
+                Types::new()
+            };
             for (path, t) in action.r#type {
                 types.add(path, t);
             }
@@ -220,13 +250,18 @@ pub fn main() -> Result<()> {
                 println!("File unchanged, doing nothing.");
             } else {
                 println!("File modified, writing new save.");
-                modified_save.write(&mut BufWriter::new(
+                let mut writer = BufWriter::new(
                     OpenOptions::new()
                         .create(true)
                         .truncate(true)
                         .write(true)
                         .open(action.path)?,
-                ))?;
+                );
+                if action.compress_oodle {
+                    modified_save.write_compressed(&mut writer, CompressionFormat::Oodle)?;
+                } else {
+                    modified_save.write(&mut writer)?;
+                }
             }
         }
     }

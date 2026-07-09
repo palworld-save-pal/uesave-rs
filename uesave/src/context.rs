@@ -134,8 +134,29 @@ impl<S> SaveGameArchive<S> {
     fn path(&self) -> String {
         self.scope.path()
     }
-    fn get_type(&self) -> Option<&StructType> {
+    pub(crate) fn get_type(&self) -> Option<&StructType> {
         self.types.types.get(&self.path())
+    }
+    /// Run `f` with a nested archive over `stream` that shares this archive's
+    /// version, types, scope and schemas. Used to parse/serialize game-specific
+    /// data embedded as byte arrays (e.g. Palworld RawData properties).
+    pub(crate) fn with_nested<S2, T>(
+        &mut self,
+        stream: S2,
+        f: impl FnOnce(&mut SaveGameArchive<S2>) -> Result<T>,
+    ) -> Result<T> {
+        let mut nested = SaveGameArchive {
+            stream,
+            version: self.version.clone(),
+            types: Rc::clone(&self.types),
+            scope: std::mem::take(&mut self.scope),
+            log: self.log,
+            error_to_raw: self.error_to_raw,
+            schemas: Rc::clone(&self.schemas),
+        };
+        let result = f(&mut nested);
+        self.scope = nested.scope;
+        result
     }
     pub fn set_version(&mut self, version: Header) {
         self.version = Some(version);

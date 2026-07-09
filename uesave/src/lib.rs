@@ -28,8 +28,10 @@ match save.root.properties["NumberOfGamesPlayed"] {
 */
 
 mod archive;
+pub mod compression;
 mod context;
 mod error;
+pub mod games;
 mod serialization;
 
 #[cfg(test)]
@@ -212,7 +214,18 @@ pub fn read_string<A: ArchiveReader>(ar: &mut A) -> Result<String> {
     if len < 0 {
         let chars = read_array((-len) as u32, ar, |r| Ok(r.read_u16::<LE>()?))?;
         let length = chars.iter().position(|&c| c == 0).unwrap_or(chars.len());
-        Ok(String::from_utf16(&chars[..length]).unwrap())
+        Ok(match String::from_utf16(&chars[..length]) {
+            Ok(s) => s,
+            Err(_) => {
+                if ar.log() {
+                    eprintln!(
+                        "Warning: UTF-16 decoding error at '{}', using lossy conversion. Data loss may occur.",
+                        ar.path()
+                    );
+                }
+                String::from_utf16_lossy(&chars[..length])
+            }
+        })
     } else {
         let mut chars = vec![0; len as usize];
         ar.read_exact(&mut chars)?;
@@ -252,7 +265,19 @@ fn read_string_trailing<A: ArchiveReader>(ar: &mut A) -> Result<(String, Vec<u8>
             rest.push(ar.read_u8()?);
             read += 1;
         }
-        Ok((String::from_utf16(&chars).unwrap(), rest))
+        let string = match String::from_utf16(&chars) {
+            Ok(s) => s,
+            Err(_) => {
+                if ar.log() {
+                    eprintln!(
+                        "Warning: UTF-16 decoding error in trailing string at '{}', using lossy conversion. Data loss may occur.",
+                        ar.path()
+                    );
+                }
+                String::from_utf16_lossy(&chars)
+            }
+        };
+        Ok((string, rest))
     } else {
         let bytes = len as usize;
         let mut chars = vec![];
@@ -272,7 +297,19 @@ fn read_string_trailing<A: ArchiveReader>(ar: &mut A) -> Result<(String, Vec<u8>
             rest.push(ar.read_u8()?);
             read += 1;
         }
-        Ok((String::from_utf8(chars).unwrap(), rest))
+        let string = match String::from_utf8(chars) {
+            Ok(s) => s,
+            Err(e) => {
+                if ar.log() {
+                    eprintln!(
+                        "Warning: UTF-8 decoding error in trailing string at '{}', using lossy conversion. Data loss may occur.",
+                        ar.path()
+                    );
+                }
+                String::from_utf8_lossy(&e.into_bytes()).into_owned()
+            }
+        };
+        Ok((string, rest))
     }
 }
 #[cfg_attr(feature = "tracing", instrument(skip_all))]
@@ -422,12 +459,18 @@ fn read_property<T: ArchiveType, A: ArchiveReader<ArchiveType = T>>(
 
         let key = PropertyKey(tag.index, tag_name.clone());
 
-        // Record the final, complete schema
+        // Post-process (may convert game-specific embedded data and refine the
+        // tag further) and record the final, complete schema
         ar.scope().push(&tag_name);
-        ar.record_schema(ar.path().to_string(), tag.into_partial());
+        let result = (|ar: &mut A| -> Result<Property<T>> {
+            let mut partial = tag.into_partial();
+            let value = ar.post_process_property(&mut partial, value)?;
+            ar.record_schema(ar.path().to_string(), partial);
+            Ok(value)
+        })(ar);
         ar.scope().pop();
 
-        Ok(Some((key, value)))
+        Ok(Some((key, result?)))
     } else {
         Ok(None)
     }
@@ -443,7 +486,15 @@ fn write_property<T: ArchiveType, A: ArchiveWriter<ArchiveType = T>>(
             .get_schema(&ar.path())
             .ok_or_else(|| Error::MissingPropertySchema(ar.path()))?;
 
-        let mut tag = tag_partial.into_full(&prop.0 .1, 0, prop.0 .0, prop.1);
+        // Pre-process (may convert game-specific typed values back into their
+        // embedded representation, replacing both tag and value)
+        let (tag_partial, converted) = match ar.pre_write_property(prop.0, &tag_partial, prop.1)? {
+            Some((tag_partial, converted)) => (tag_partial, Some(converted)),
+            None => (tag_partial, None),
+        };
+        let value = converted.as_ref().unwrap_or(prop.1);
+
+        let mut tag = tag_partial.into_full(&prop.0 .1, 0, prop.0 .0, value);
 
         // Write tag with placeholder size
         tag.size = 0;
@@ -452,7 +503,7 @@ fn write_property<T: ArchiveType, A: ArchiveWriter<ArchiveType = T>>(
         let data_start = ar.stream_position()?;
 
         // Write the actual property data
-        prop.1.write(ar, &tag)?;
+        value.write(ar, &tag)?;
         let data_end = ar.stream_position()?;
 
         // Calculate actual size
@@ -1323,6 +1374,22 @@ define_struct_types! {
     ("/Script/Niagara", NiagaraVariableWithOffset),
     ("/Script/NiagaraShader", NiagaraDataInterfaceGeneratedFunction),
     ("/Script/NiagaraShader", NiagaraDataInterfaceGPUParamInfo),
+    // Palworld custom struct types (embedded in RawData byte arrays)
+    ("/Script/Pal", PalCharacterData),
+    ("/Script/Pal", PalItemContainer),
+    ("/Script/Pal", PalGroupData),
+    ("/Script/Pal", PalDynamicItem),
+    ("/Script/Pal", PalBuildProcess),
+    ("/Script/Pal", PalGuildItemStorage),
+    ("/Script/Pal", PalGuildLab),
+    ("/Script/Pal", PalItemContainerSlots),
+    ("/Script/Pal", PalCharacterContainer),
+    ("/Script/Pal", PalConnector),
+    ("/Script/Pal", PalBaseCamp),
+    ("/Script/Pal", PalWork),
+    ("/Script/Pal", PalMapModel),
+    ("/Script/Pal", PalMapConcreteModel),
+    ("/Script/Pal", PalMapConcreteModelModule),
 }
 
 type DateTime = u64;
@@ -3907,6 +3974,22 @@ pub enum StructValue<T: ArchiveType = SaveGameArchiveType> {
     NiagaraVariableWithOffset(FNiagaraVariableWithOffset<T>),
     NiagaraDataInterfaceGeneratedFunction(FNiagaraDataInterfaceGeneratedFunction),
     NiagaraDataInterfaceGPUParamInfo(FNiagaraDataInterfaceGPUParamInfo),
+    // Palworld custom struct values (parsed from RawData byte arrays)
+    PalCharacterData(games::palworld::PalCharacterData<T>),
+    PalItemContainer(games::palworld::PalItemContainer),
+    PalGroupData(games::palworld::PalGroupData),
+    PalDynamicItem(games::palworld::PalDynamicItem<T>),
+    PalBuildProcess(games::palworld::PalBuildProcess),
+    PalGuildItemStorage(games::palworld::PalGuildItemStorage),
+    PalGuildLab(games::palworld::PalGuildLab),
+    PalItemContainerSlots(games::palworld::PalItemContainerSlot),
+    PalCharacterContainer(games::palworld::PalCharacterContainer),
+    PalConnector(games::palworld::PalConnector),
+    PalBaseCamp(games::palworld::PalBaseCamp),
+    PalWork(games::palworld::PalWork),
+    PalMapModel(games::palworld::PalMapModel),
+    PalMapConcreteModel(games::palworld::PalMapConcreteModel<T>),
+    PalMapConcreteModelModule(games::palworld::PalMapConcreteModelModule),
     /// Raw struct data for other unknown structs serialized with HasBinaryOrNativeSerialize
     Raw(Vec<u8>),
     /// User defined struct which is simply a list of properties
@@ -4043,6 +4126,49 @@ impl<T: ArchiveType> StructValue<T> {
                     FNiagaraDataInterfaceGPUParamInfo::read(ar)?,
                 )
             }
+            StructType::PalCharacterData => {
+                StructValue::PalCharacterData(games::palworld::PalCharacterData::read(ar)?)
+            }
+            StructType::PalItemContainer => {
+                StructValue::PalItemContainer(games::palworld::PalItemContainer::read(ar)?)
+            }
+            StructType::PalGroupData => {
+                StructValue::PalGroupData(games::palworld::PalGroupData::read(ar)?)
+            }
+            StructType::PalDynamicItem => {
+                StructValue::PalDynamicItem(games::palworld::PalDynamicItem::read(ar)?)
+            }
+            StructType::PalBuildProcess => {
+                StructValue::PalBuildProcess(games::palworld::PalBuildProcess::read(ar)?)
+            }
+            StructType::PalGuildItemStorage => {
+                StructValue::PalGuildItemStorage(games::palworld::PalGuildItemStorage::read(ar)?)
+            }
+            StructType::PalGuildLab => {
+                StructValue::PalGuildLab(games::palworld::PalGuildLab::read(ar)?)
+            }
+            StructType::PalItemContainerSlots => {
+                StructValue::PalItemContainerSlots(games::palworld::PalItemContainerSlot::read(ar)?)
+            }
+            StructType::PalCharacterContainer => StructValue::PalCharacterContainer(
+                games::palworld::PalCharacterContainer::read(ar)?,
+            ),
+            StructType::PalConnector => {
+                StructValue::PalConnector(games::palworld::PalConnector::read(ar)?)
+            }
+            StructType::PalBaseCamp => {
+                StructValue::PalBaseCamp(games::palworld::PalBaseCamp::read(ar)?)
+            }
+            StructType::PalWork => StructValue::PalWork(games::palworld::PalWork::read(ar)?),
+            StructType::PalMapModel => {
+                StructValue::PalMapModel(games::palworld::PalMapModel::read(ar)?)
+            }
+            StructType::PalMapConcreteModel => {
+                StructValue::PalMapConcreteModel(games::palworld::PalMapConcreteModel::read(ar)?)
+            }
+            StructType::PalMapConcreteModelModule => StructValue::PalMapConcreteModelModule(
+                games::palworld::PalMapConcreteModelModule::read(ar)?,
+            ),
             StructType::Raw(_) => unreachable!("should be handled at property level"),
             StructType::Struct(_) => StructValue::Struct(read_properties_until_none(ar)?),
         })
@@ -4092,6 +4218,21 @@ impl<T: ArchiveType> StructValue<T> {
             StructValue::NiagaraVariableWithOffset(v) => v.write(ar)?,
             StructValue::NiagaraDataInterfaceGeneratedFunction(v) => v.write(ar)?,
             StructValue::NiagaraDataInterfaceGPUParamInfo(v) => v.write(ar)?,
+            StructValue::PalCharacterData(v) => v.write(ar)?,
+            StructValue::PalItemContainer(v) => v.write(ar)?,
+            StructValue::PalGroupData(v) => v.write(ar)?,
+            StructValue::PalDynamicItem(v) => v.write(ar)?,
+            StructValue::PalBuildProcess(v) => v.write(ar)?,
+            StructValue::PalGuildItemStorage(v) => v.write(ar)?,
+            StructValue::PalGuildLab(v) => v.write(ar)?,
+            StructValue::PalItemContainerSlots(v) => v.write(ar)?,
+            StructValue::PalCharacterContainer(v) => v.write(ar)?,
+            StructValue::PalConnector(v) => v.write(ar)?,
+            StructValue::PalBaseCamp(v) => v.write(ar)?,
+            StructValue::PalWork(v) => v.write(ar)?,
+            StructValue::PalMapModel(v) => v.write(ar)?,
+            StructValue::PalMapConcreteModel(v) => v.write(ar)?,
+            StructValue::PalMapConcreteModelModule(v) => v.write(ar)?,
             StructValue::Raw(v) => ar.write_all(v)?,
             StructValue::Struct(v) => write_properties_none_terminated(ar, v)?,
         }
@@ -4978,6 +5119,21 @@ impl Save {
         writer.write_all(&buffer)?;
         Ok(())
     }
+    /// Writes the save compressed with the given [`compression::CompressionFormat`]
+    /// (e.g. Palworld's Oodle-compressed PLM format).
+    pub fn write_compressed<W: Write>(
+        &self,
+        writer: &mut W,
+        format: compression::CompressionFormat,
+    ) -> Result<()> {
+        let mut buffer = Vec::new();
+        self.write(&mut buffer)?;
+
+        let output = compression::compress_save(&buffer, format)?;
+
+        writer.write_all(&output)?;
+        Ok(())
+    }
 }
 
 pub struct SaveReader {
@@ -5018,11 +5174,15 @@ impl SaveReader {
         self.types = Some(Rc::new(types));
         self
     }
-    pub fn read<S: Read>(self, stream: S) -> Result<Save, ParseError> {
+    pub fn read<S: Read>(self, mut stream: S) -> Result<Save, ParseError> {
         let types = self.types.unwrap_or_else(|| Rc::new(Types::new()));
         let schemas = Rc::new(RefCell::new(PropertySchemas::new()));
 
-        let stream = SeekReader::new(stream);
+        // Transparently decompress compressed save formats (e.g. Palworld PLM/PLZ).
+        // Plain GVAS data is passed through unchanged.
+        let data = compression::decompress_save(&mut stream)
+            .map_err(|error| error::ParseError { offset: 0, error })?;
+        let stream = SeekReader::new(Cursor::new(data));
         let mut reader = SaveGameArchive {
             stream,
             version: None,
