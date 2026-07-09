@@ -488,11 +488,10 @@ fn write_property<T: ArchiveType, A: ArchiveWriter<ArchiveType = T>>(
 
         // Pre-process (may convert game-specific typed values back into their
         // embedded representation, replacing both tag and value)
-        let (tag_partial, converted) =
-            match ar.pre_write_property(prop.0, &tag_partial, prop.1)? {
-                Some((tag_partial, converted)) => (tag_partial, Some(converted)),
-                None => (tag_partial, None),
-            };
+        let (tag_partial, converted) = match ar.pre_write_property(prop.0, &tag_partial, prop.1)? {
+            Some((tag_partial, converted)) => (tag_partial, Some(converted)),
+            None => (tag_partial, None),
+        };
         let value = converted.as_ref().unwrap_or(prop.1);
 
         let mut tag = tag_partial.into_full(&prop.0 .1, 0, prop.0 .0, value);
@@ -612,7 +611,7 @@ impl<'de> Deserialize<'de> for FGuid {
             where
                 E: serde::de::Error,
             {
-                FGuid::parse_str(value).map_err(|e| E::custom(format!("Invalid UUID: {}", e)))
+                FGuid::parse_str(value).map_err(|e| E::custom(format!("Invalid UUID: {e}")))
             }
         }
 
@@ -2236,8 +2235,7 @@ impl FMovieSceneFloatChannel {
         let times_elem_size = ar.read_i32::<LE>()?;
         if times_elem_size != 4 {
             return Err(Error::Other(format!(
-                "FMovieSceneFloatChannel: unexpected Times element size {} (expected 4)",
-                times_elem_size
+                "FMovieSceneFloatChannel: unexpected Times element size {times_elem_size} (expected 4)"
             )));
         }
         let times_count = ar.read_i32::<LE>()? as usize;
@@ -2249,8 +2247,7 @@ impl FMovieSceneFloatChannel {
         let values_elem_size = ar.read_i32::<LE>()?;
         if values_elem_size != 28 {
             return Err(Error::Other(format!(
-                "FMovieSceneFloatChannel: unexpected Values element size {} (expected 28)",
-                values_elem_size
+                "FMovieSceneFloatChannel: unexpected Values element size {values_elem_size} (expected 28)"
             )));
         }
         let values_count = ar.read_i32::<LE>()? as usize;
@@ -3975,21 +3972,22 @@ pub enum StructValue<T: ArchiveType = SaveGameArchiveType> {
     NiagaraVariableWithOffset(FNiagaraVariableWithOffset<T>),
     NiagaraDataInterfaceGeneratedFunction(FNiagaraDataInterfaceGeneratedFunction),
     NiagaraDataInterfaceGPUParamInfo(FNiagaraDataInterfaceGPUParamInfo),
-    // Palworld custom struct values (parsed from RawData byte arrays)
+    // Palworld custom struct values (parsed from RawData byte arrays).
+    // Larger types are boxed to keep the enum size down.
     PalCharacterData(games::palworld::PalCharacterData<T>),
     PalItemContainer(games::palworld::PalItemContainer),
     PalGroupData(games::palworld::PalGroupData),
-    PalDynamicItem(games::palworld::PalDynamicItem<T>),
+    PalDynamicItem(std::boxed::Box<games::palworld::PalDynamicItem<T>>),
     PalBuildProcess(games::palworld::PalBuildProcess),
     PalGuildItemStorage(games::palworld::PalGuildItemStorage),
     PalGuildLab(games::palworld::PalGuildLab),
     PalItemContainerSlots(games::palworld::PalItemContainerSlot),
     PalCharacterContainer(games::palworld::PalCharacterContainer),
     PalConnector(games::palworld::PalConnector),
-    PalBaseCamp(games::palworld::PalBaseCamp),
-    PalWork(games::palworld::PalWork),
-    PalMapModel(games::palworld::PalMapModel),
-    PalMapConcreteModel(games::palworld::PalMapConcreteModel<T>),
+    PalBaseCamp(std::boxed::Box<games::palworld::PalBaseCamp>),
+    PalWork(std::boxed::Box<games::palworld::PalWork>),
+    PalMapModel(std::boxed::Box<games::palworld::PalMapModel>),
+    PalMapConcreteModel(std::boxed::Box<games::palworld::PalMapConcreteModel<T>>),
     PalMapConcreteModelModule(games::palworld::PalMapConcreteModelModule),
     /// Raw struct data for other unknown structs serialized with HasBinaryOrNativeSerialize
     Raw(Vec<u8>),
@@ -4137,7 +4135,7 @@ impl<T: ArchiveType> StructValue<T> {
                 StructValue::PalGroupData(games::palworld::PalGroupData::read(ar)?)
             }
             StructType::PalDynamicItem => {
-                StructValue::PalDynamicItem(games::palworld::PalDynamicItem::read(ar)?)
+                StructValue::PalDynamicItem(games::palworld::PalDynamicItem::read(ar)?.into())
             }
             StructType::PalBuildProcess => {
                 StructValue::PalBuildProcess(games::palworld::PalBuildProcess::read(ar)?)
@@ -4148,9 +4146,9 @@ impl<T: ArchiveType> StructValue<T> {
             StructType::PalGuildLab => {
                 StructValue::PalGuildLab(games::palworld::PalGuildLab::read(ar)?)
             }
-            StructType::PalItemContainerSlots => StructValue::PalItemContainerSlots(
-                games::palworld::PalItemContainerSlot::read(ar)?,
-            ),
+            StructType::PalItemContainerSlots => {
+                StructValue::PalItemContainerSlots(games::palworld::PalItemContainerSlot::read(ar)?)
+            }
             StructType::PalCharacterContainer => StructValue::PalCharacterContainer(
                 games::palworld::PalCharacterContainer::read(ar)?,
             ),
@@ -4158,15 +4156,15 @@ impl<T: ArchiveType> StructValue<T> {
                 StructValue::PalConnector(games::palworld::PalConnector::read(ar)?)
             }
             StructType::PalBaseCamp => {
-                StructValue::PalBaseCamp(games::palworld::PalBaseCamp::read(ar)?)
+                StructValue::PalBaseCamp(games::palworld::PalBaseCamp::read(ar)?.into())
             }
-            StructType::PalWork => StructValue::PalWork(games::palworld::PalWork::read(ar)?),
+            StructType::PalWork => StructValue::PalWork(games::palworld::PalWork::read(ar)?.into()),
             StructType::PalMapModel => {
-                StructValue::PalMapModel(games::palworld::PalMapModel::read(ar)?)
+                StructValue::PalMapModel(games::palworld::PalMapModel::read(ar)?.into())
             }
-            StructType::PalMapConcreteModel => {
-                StructValue::PalMapConcreteModel(games::palworld::PalMapConcreteModel::read(ar)?)
-            }
+            StructType::PalMapConcreteModel => StructValue::PalMapConcreteModel(
+                games::palworld::PalMapConcreteModel::read(ar)?.into(),
+            ),
             StructType::PalMapConcreteModelModule => StructValue::PalMapConcreteModelModule(
                 games::palworld::PalMapConcreteModelModule::read(ar)?,
             ),
@@ -4874,9 +4872,8 @@ impl<T: ArchiveType> Property<T> {
             | Property::MulticastSparseDelegate(_)
             | Property::Raw(_) => {
                 return Err(Error::Other(format!(
-                    "Property variant {:?} cannot be written in value context (Maps/Sets/Arrays)",
-                    self
-                )))
+                "Property variant {self:?} cannot be written in value context (Maps/Sets/Arrays)"
+            )))
             }
         };
         Ok(())
