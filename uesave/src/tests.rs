@@ -583,3 +583,54 @@ fn test_json_roundtrip() {
 
     assert!(original_bytes == roundtripped_bytes);
 }
+
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// Parses an `Expedition` ConcreteModel payload, asserting full consumption
+/// and a byte-exact rewrite, and returns the mission model.
+fn parse_team_mission(
+    payload: &[u8],
+) -> Result<games::palworld::PalMapObjectCharacterTeamMissionModel> {
+    let len = payload.len() as u64;
+    let parsed = run(Cursor::new(payload.to_vec()), |ar| {
+        let parsed = games::palworld::PalMapConcreteModel::read_with_object_id(ar, "Expedition")?;
+        assert_eq!(
+            len,
+            ar.stream_position()?,
+            "parser must consume the entire payload"
+        );
+        Ok(parsed)
+    })?;
+
+    let mut reconstructed = vec![];
+    run(Cursor::new(&mut reconstructed), |ar| parsed.write(ar))?;
+    assert_eq!(payload, reconstructed);
+
+    match parsed.model_data {
+        games::palworld::PalMapConcreteModelVariant::CharacterTeamMission(mission) => Ok(mission),
+        other => panic!("expected CharacterTeamMission, got {other:?}"),
+    }
+}
+
+/// Real `Expedition` map object ConcreteModel payloads from a Palworld world
+/// save. The current layout has the mission id preceded by an unknown 4-byte
+/// field; it must be extracted, not hidden inside opaque tail bytes.
+#[test]
+fn test_palworld_character_team_mission_current_layout() -> Result<()> {
+    let cases = [
+        ("ecfe5f9758d3c4428804842978fdbbd2d55ed9ffe1e4de458207c8f0ca273ca100000000050000004e6f6e6500000000000110d47bcfad0e000000000000", "None", 1),
+        ("fe5056754750e940b0a6005ae54ac5f3d81b3eac213e5c40968659f5abec6a1c000000001400000044554e47454f4e5f564f4c43414e4f48415244000000000001d0a20c702b12000000000000", "DUNGEON_VOLCANOHARD", 1),
+    ];
+
+    for (payload, expected_mission_id, expected_state) in cases {
+        let mission = parse_team_mission(&unhex(payload))?;
+        assert_eq!(expected_mission_id, mission.mission_id);
+        assert_eq!(expected_state, mission.state);
+    }
+    Ok(())
+}
