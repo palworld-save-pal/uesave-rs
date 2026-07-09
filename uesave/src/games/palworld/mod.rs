@@ -86,7 +86,6 @@ pub fn palworld_types() -> Types {
         "worldSaveData.MapObjectSpawnerInStageSaveData.Value",
         "worldSaveData.MapObjectSpawnerInStageSaveData.Value.SpawnerDataMapByLevelObjectInstanceId.Value",
         "worldSaveData.MapObjectSpawnerInStageSaveData.Value.SpawnerDataMapByLevelObjectInstanceId.Value.ItemMap.Value",
-        "worldSaveData.WorkSaveData.WorkSaveData.WorkAssignMap.Value",
         "worldSaveData.WorkSaveData.WorkAssignMap.Value",
         "worldSaveData.BaseCampSaveData.Value",
         "worldSaveData.BaseCampSaveData.ModuleMap.Value",
@@ -94,9 +93,8 @@ pub fn palworld_types() -> Types {
         "worldSaveData.GroupSaveDataMap.Value",
         "worldSaveData.EnemyCampSaveData.EnemyCampStatusMap.Value",
         "worldSaveData.EnemyCampSaveData.EnemyCampStatusMap.Value.TreasureBoxInfoMapBySpawnerName.Value",
-        "worldSaveData.DungeonSaveData.DungeonSaveData.MapObjectSaveData.MapObjectSaveData.Model.EffectMap.Value",
-        "worldSaveData.DungeonSaveData.DungeonSaveData.MapObjectSaveData.MapObjectSaveData.ConcreteModel.ModuleMap.Value",
-        "worldSaveData.DungeonSaveData.DungeonSaveData.RewardSaveDataMap.Value",
+        "worldSaveData.DungeonSaveData.MapObjectSaveData.Model.EffectMap.Value",
+        "worldSaveData.DungeonSaveData.MapObjectSaveData.ConcreteModel.ModuleMap.Value",
         "worldSaveData.InvaderSaveData.Value",
         "worldSaveData.OilrigSaveData.OilrigMap.Value",
         "worldSaveData.SupplySaveData.SupplyInfos.Value",
@@ -122,7 +120,6 @@ pub fn palworld_types() -> Types {
         "worldSaveData.MapObjectSpawnerInStageSaveData.Value.SpawnerDataMapByLevelObjectInstanceId.Key",
         "worldSaveData.BaseCampSaveData.Key",
         "worldSaveData.GroupSaveDataMap.Key",
-        "worldSaveData.DungeonSaveData.DungeonSaveData.RewardSaveDataMap.Key",
         "worldSaveData.InvaderSaveData.Key",
         "worldSaveData.SupplySaveData.SupplyInfos.Key",
         "worldSaveData.GuildExtraSaveDataMap.Key",
@@ -136,16 +133,43 @@ pub fn palworld_types() -> Types {
 
     // Embedded (RawData) properties parsed into typed Palworld structs
     let pal_hints = [
-        ("worldSaveData.GroupSaveDataMap.RawData", StructType::PalGroupData),
-        ("worldSaveData.CharacterSaveParameterMap.RawData", StructType::PalCharacterData),
-        ("worldSaveData.ItemContainerSaveData.RawData", StructType::PalItemContainer),
-        ("worldSaveData.ItemContainerSaveData.Slots.RawData", StructType::PalItemContainerSlots),
-        ("worldSaveData.CharacterContainerSaveData.Slots.RawData", StructType::PalCharacterContainer),
-        ("worldSaveData.DynamicItemSaveData.RawData", StructType::PalDynamicItem),
-        ("worldSaveData.BaseCampSaveData.RawData", StructType::PalBaseCamp),
+        (
+            "worldSaveData.GroupSaveDataMap.RawData",
+            StructType::PalGroupData,
+        ),
+        (
+            "worldSaveData.CharacterSaveParameterMap.RawData",
+            StructType::PalCharacterData,
+        ),
+        (
+            "worldSaveData.ItemContainerSaveData.RawData",
+            StructType::PalItemContainer,
+        ),
+        (
+            "worldSaveData.ItemContainerSaveData.Slots.RawData",
+            StructType::PalItemContainerSlots,
+        ),
+        (
+            "worldSaveData.CharacterContainerSaveData.Slots.RawData",
+            StructType::PalCharacterContainer,
+        ),
+        (
+            "worldSaveData.DynamicItemSaveData.RawData",
+            StructType::PalDynamicItem,
+        ),
+        (
+            "worldSaveData.BaseCampSaveData.RawData",
+            StructType::PalBaseCamp,
+        ),
         ("worldSaveData.WorkSaveData", StructType::PalWork),
-        ("worldSaveData.GuildExtraSaveDataMap.GuildItemStorage.RawData", StructType::PalGuildItemStorage),
-        ("worldSaveData.GuildExtraSaveDataMap.Lab.RawData", StructType::PalGuildLab),
+        (
+            "worldSaveData.GuildExtraSaveDataMap.GuildItemStorage.RawData",
+            StructType::PalGuildItemStorage,
+        ),
+        (
+            "worldSaveData.GuildExtraSaveDataMap.Lab.RawData",
+            StructType::PalGuildLab,
+        ),
     ];
     for (path, t) in pal_hints {
         types.add(path.to_string(), t);
