@@ -9,30 +9,44 @@ use std::sync::LazyLock;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PalMapObjectCharacterTeamMissionModel {
+    pub leading_bytes: [u8; 4],
     pub mission_id: String,
+    pub unknown_bytes: [u8; 4],
     pub state: u8,
     pub start_time: i64,
-    pub unknown_bytes: Vec<u8>,
+    pub trailing_bytes: [u8; 4],
 }
 
 impl PalMapObjectCharacterTeamMissionModel {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
         Ok(PalMapObjectCharacterTeamMissionModel {
+            leading_bytes: {
+                let mut bytes = [0u8; 4];
+                ar.read_exact(&mut bytes)?;
+                bytes
+            },
             mission_id: ar.read_string()?,
+            unknown_bytes: {
+                let mut bytes = [0u8; 4];
+                ar.read_exact(&mut bytes)?;
+                bytes
+            },
             state: ar.read_u8()?,
             start_time: ar.read_i64::<LE>()?,
-            unknown_bytes: {
-                let mut bytes = vec![0u8; 16];
+            trailing_bytes: {
+                let mut bytes = [0u8; 4];
                 ar.read_exact(&mut bytes)?;
                 bytes
             },
         })
     }
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_all(&self.leading_bytes)?;
         ar.write_string(&self.mission_id)?;
+        ar.write_all(&self.unknown_bytes)?;
         ar.write_u8(self.state)?;
         ar.write_i64::<LE>(self.start_time)?;
-        ar.write_all(&self.unknown_bytes)?;
+        ar.write_all(&self.trailing_bytes)?;
         Ok(())
     }
 }
@@ -495,7 +509,7 @@ impl PalMapObjectFastTravelPointModel {
         if ar.read_to_end(&mut trailing_bytes)? > 0 {
             Ok(PalMapObjectFastTravelPointModel {
                 location_instance_id,
-                trailing_bytes: trailing_bytes,
+                trailing_bytes,
             })
         } else {
             Ok(PalMapObjectFastTravelPointModel {
@@ -506,7 +520,7 @@ impl PalMapObjectFastTravelPointModel {
     }
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
         self.location_instance_id.write(ar)?;
-        if self.trailing_bytes.len() > 0 {
+        if !self.trailing_bytes.is_empty() {
             ar.write_all(&self.trailing_bytes)?;
         }
         Ok(())
@@ -889,7 +903,7 @@ impl BaseModel {
         Ok(BaseModel { trailing_bytes })
     }
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
-        if self.trailing_bytes.len() > 0 {
+        if !self.trailing_bytes.is_empty() {
             ar.write_all(&self.trailing_bytes)?;
         }
         Ok(())
