@@ -230,8 +230,7 @@ impl<'de, 'a> DeserializeSeed<'de> for PropertySeed<'a> {
                 | PropertyType::SetProperty
                 | PropertyType::MapProperty
                 | PropertyType::StructProperty => Err(serde::de::Error::custom(format!(
-                    "Property type {:?} should not appear in Other variant",
-                    pt
+                    "Property type {pt:?} should not appear in Other variant"
                 ))),
             },
             PropertyTagDataPartial::Byte(_enum_type) => {
@@ -608,8 +607,7 @@ impl<'de, 'a> DeserializeSeed<'de> for ValueVecSeed<'a> {
                     | PropertyType::MulticastInlineDelegateProperty
                     | PropertyType::MulticastSparseDelegateProperty => {
                         Err(serde::de::Error::custom(format!(
-                            "Unexpected property type {:?} in array",
-                            pt
+                            "Unexpected property type {pt:?} in array"
                         )))
                     }
                 }
@@ -773,7 +771,7 @@ impl<'de, 'a> Visitor<'de> for PropertiesSeed<'a> {
             };
 
             let tag = self.schemas.schemas().get(&prop_path).ok_or_else(|| {
-                serde::de::Error::custom(format!("No schema for property: {}", prop_path))
+                serde::de::Error::custom(format!("No schema for property: {prop_path}"))
             })?;
 
             let prop = map.next_value_seed(PropertySeed {
@@ -909,17 +907,68 @@ impl<'de> Visitor<'de> for PalPropertySeed<'_> {
         ))))
     }
 
-    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let sv = PalStructValueSeed {
-            struct_type: self.struct_type,
-            path: self.path,
-            schemas: self.schemas,
+        // Byte arrays serialize externally tagged ({"Byte": [...]}), so peek
+        // at the first key to tell them apart from Pal struct maps
+        let Some(first_key) = map.next_key::<String>()? else {
+            return Err(serde::de::Error::custom(format!(
+                "empty map for {:?} property",
+                self.struct_type
+            )));
+        };
+        match first_key.as_str() {
+            "Byte" => Ok(Property::Array(ValueVec::Byte(crate::ByteArray::Byte(
+                map.next_value()?,
+            )))),
+            "Label" => Ok(Property::Array(ValueVec::Byte(crate::ByteArray::Label(
+                map.next_value()?,
+            )))),
+            _ => {
+                let sv = PalStructValueSeed {
+                    struct_type: self.struct_type,
+                    path: self.path,
+                    schemas: self.schemas,
+                }
+                .deserialize(serde::de::value::MapAccessDeserializer::new(
+                    PrependedMapAccess {
+                        first_key: Some(first_key),
+                        inner: map,
+                    },
+                ))?;
+                Ok(Property::Struct(sv))
+            }
         }
-        .deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-        Ok(Property::Struct(sv))
+    }
+}
+
+/// A [`MapAccess`] adapter that re-injects an already-consumed first key.
+struct PrependedMapAccess<M> {
+    first_key: Option<String>,
+    inner: M,
+}
+
+impl<'de, M: MapAccess<'de>> MapAccess<'de> for PrependedMapAccess<M> {
+    type Error = M::Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        use serde::de::IntoDeserializer;
+        if let Some(key) = self.first_key.take() {
+            return seed.deserialize(key.into_deserializer()).map(Some);
+        }
+        self.inner.next_key_seed(seed)
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        self.inner.next_value_seed(seed)
     }
 }
 
@@ -955,7 +1004,8 @@ impl<'de> DeserializeSeed<'de> for PalStructValueSeed<'_> {
                     path: self.path,
                     schemas: self.schemas,
                 }
-                .deserialize(deserializer)?,
+                .deserialize(deserializer)?
+                .into(),
             )),
             StructType::PalBuildProcess => Ok(StructValue::PalBuildProcess(
                 palworld::PalBuildProcess::deserialize(deserializer)?,
@@ -976,20 +1026,21 @@ impl<'de> DeserializeSeed<'de> for PalStructValueSeed<'_> {
                 palworld::PalConnector::deserialize(deserializer)?,
             )),
             StructType::PalBaseCamp => Ok(StructValue::PalBaseCamp(
-                palworld::PalBaseCamp::deserialize(deserializer)?,
+                palworld::PalBaseCamp::deserialize(deserializer)?.into(),
             )),
-            StructType::PalWork => Ok(StructValue::PalWork(palworld::PalWork::deserialize(
-                deserializer,
-            )?)),
+            StructType::PalWork => Ok(StructValue::PalWork(
+                palworld::PalWork::deserialize(deserializer)?.into(),
+            )),
             StructType::PalMapModel => Ok(StructValue::PalMapModel(
-                palworld::PalMapModel::deserialize(deserializer)?,
+                palworld::PalMapModel::deserialize(deserializer)?.into(),
             )),
             StructType::PalMapConcreteModel => Ok(StructValue::PalMapConcreteModel(
                 PalMapConcreteModelSeed {
                     path: self.path,
                     schemas: self.schemas,
                 }
-                .deserialize(deserializer)?,
+                .deserialize(deserializer)?
+                .into(),
             )),
             StructType::PalMapConcreteModelModule => Ok(StructValue::PalMapConcreteModelModule(
                 palworld::PalMapConcreteModelModule::deserialize(deserializer)?,
