@@ -1,6 +1,9 @@
 use std::io::{Read, Seek, Write};
 
-use crate::{Header, PropertyTagPartial, Result, SaveGameArchive, StructType, VersionInfo};
+use crate::{
+    Header, Property, PropertyKey, PropertyTagPartial, Result, SaveGameArchive, StructType,
+    VersionInfo,
+};
 
 /// Defines the type system for an archive format.
 ///
@@ -72,6 +75,19 @@ pub trait ArchiveReader: Read + Seek {
     fn error_to_raw(&self) -> bool {
         false
     }
+
+    /// Post-process a freshly read property, called with the property name pushed on the scope.
+    /// Allows archive implementations to convert game-specific embedded data (e.g. Palworld
+    /// RawData byte arrays) into typed values. Implementations may update `tag` to reflect the
+    /// converted type; the updated tag is what gets recorded in the schemas.
+    fn post_process_property(
+        &mut self,
+        tag: &mut PropertyTagPartial,
+        value: Property<Self::ArchiveType>,
+    ) -> Result<Property<Self::ArchiveType>> {
+        let _ = tag;
+        Ok(value)
+    }
 }
 
 pub trait ArchiveWriter: Write + Seek {
@@ -113,6 +129,21 @@ pub trait ArchiveWriter: Write + Seek {
     /// Returns true if diagnostic logging is enabled
     fn log(&self) -> bool {
         false
+    }
+
+    /// Pre-process a property about to be written, called with the property name pushed on the
+    /// scope. Allows archive implementations to convert typed game-specific values (e.g. Palworld
+    /// structs) back into their embedded representation (byte arrays). Returning `Some` replaces
+    /// both the tag and the property value used for writing.
+    #[allow(clippy::type_complexity)]
+    fn pre_write_property(
+        &mut self,
+        key: &PropertyKey,
+        tag: &PropertyTagPartial,
+        prop: &Property<Self::ArchiveType>,
+    ) -> Result<Option<(PropertyTagPartial, Property<Self::ArchiveType>)>> {
+        let _ = (key, tag, prop);
+        Ok(None)
     }
 }
 
@@ -178,6 +209,14 @@ where
     fn error_to_raw(&self) -> bool {
         SaveGameArchive::error_to_raw(self)
     }
+
+    fn post_process_property(
+        &mut self,
+        tag: &mut PropertyTagPartial,
+        value: Property,
+    ) -> Result<Property> {
+        crate::games::palworld::process_property_for_read(self, tag, value)
+    }
 }
 impl<W> ArchiveWriter for SaveGameArchive<W>
 where
@@ -223,5 +262,14 @@ where
 
     fn log(&self) -> bool {
         SaveGameArchive::log(self)
+    }
+
+    fn pre_write_property(
+        &mut self,
+        key: &PropertyKey,
+        tag: &PropertyTagPartial,
+        prop: &Property,
+    ) -> Result<Option<(PropertyTagPartial, Property)>> {
+        crate::games::palworld::process_property_for_write(self, key, tag, prop)
     }
 }

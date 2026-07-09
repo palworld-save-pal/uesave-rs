@@ -1,5 +1,9 @@
+use crate::games::palworld::{
+    self, PalCharacterData, PalDynamicItem, PalDynamicItemType, PalMapConcreteModel,
+    PalMapConcreteModelVariant, PalMapObjectHatchingEggModel,
+};
 use crate::{
-    FClothLODDataCommon, FMeshToMeshVertData, FNiagaraVariable, FNiagaraVariableBase,
+    FClothLODDataCommon, FGuid, FMeshToMeshVertData, FNiagaraVariable, FNiagaraVariableBase,
     FNiagaraVariableWithOffset, Properties, Property, PropertyKey, PropertySchemas,
     PropertyTagDataPartial, Root, Save, SoftObjectPath, StructType, StructValue, ValueVec,
 };
@@ -130,6 +134,21 @@ properties_seeds! {
         type_def: Properties = "type_def",
         offset: i32,
     }
+
+    PalCharacterData => PalCharacterDataSeed {
+        object: Properties = "",
+        unknown_bytes: [u8; 4],
+        group_id: FGuid,
+        trailing_bytes: [u8; 4],
+    }
+
+    PalMapObjectHatchingEggModel => PalMapObjectHatchingEggModelSeed {
+        leading_bytes: [u8; 4],
+        hatched_character_save_parameter: Properties = "",
+        current_pal_egg_temp_diff: i32,
+        hatched_character_guid: FGuid,
+        trailing_bytes: [u8; 4],
+    }
 }
 
 struct PropertySeed<'a> {
@@ -222,6 +241,16 @@ impl<'de, 'a> DeserializeSeed<'de> for PropertySeed<'a> {
                 Ok(Property::Enum(String::deserialize(deserializer)?))
             }
             PropertyTagDataPartial::Struct { struct_type, .. } => {
+                // Palworld structs embedded as byte arrays: empty/unparsed
+                // payloads stay byte arrays in JSON, so accept both shapes
+                if palworld::is_pal_struct_type(struct_type) {
+                    return PalPropertySeed {
+                        struct_type,
+                        path: self.path,
+                        schemas: self.schemas,
+                    }
+                    .deserialize(deserializer);
+                }
                 let sv = StructValueSeed {
                     struct_type,
                     path: self.path,
@@ -418,6 +447,26 @@ impl<'de, 'a> DeserializeSeed<'de> for StructValueSeed<'a> {
                 }
                 .deserialize(deserializer)?,
             )),
+            StructType::PalCharacterData
+            | StructType::PalItemContainer
+            | StructType::PalGroupData
+            | StructType::PalDynamicItem
+            | StructType::PalBuildProcess
+            | StructType::PalGuildItemStorage
+            | StructType::PalGuildLab
+            | StructType::PalItemContainerSlots
+            | StructType::PalCharacterContainer
+            | StructType::PalConnector
+            | StructType::PalBaseCamp
+            | StructType::PalWork
+            | StructType::PalMapModel
+            | StructType::PalMapConcreteModel
+            | StructType::PalMapConcreteModelModule => PalStructValueSeed {
+                struct_type: self.struct_type,
+                path: self.path,
+                schemas: self.schemas,
+            }
+            .deserialize(deserializer),
             StructType::Struct(_) => {
                 let props = PropertiesSeed {
                     path: self.path,
@@ -817,5 +866,491 @@ impl<'de> Deserialize<'de> for Save {
             &["header", "schemas", "root", "extra"],
             SaveVisitor,
         )
+    }
+}
+
+/// Deserializes a property whose schema names a Palworld struct type. The JSON
+/// value is either the typed struct (a map) or a plain byte array (empty or
+/// unparsed payloads, which are kept in their embedded form).
+struct PalPropertySeed<'a> {
+    struct_type: &'a StructType,
+    path: &'a str,
+    schemas: &'a PropertySchemas,
+}
+
+impl<'de> DeserializeSeed<'de> for PalPropertySeed<'_> {
+    type Value = Property;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for PalPropertySeed<'_> {
+    type Value = Property;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "a {:?} struct or a byte array", self.struct_type)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut bytes = Vec::new();
+        while let Some(byte) = seq.next_element::<u8>()? {
+            bytes.push(byte);
+        }
+        Ok(Property::Array(ValueVec::Byte(crate::ByteArray::Byte(
+            bytes,
+        ))))
+    }
+
+    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let sv = PalStructValueSeed {
+            struct_type: self.struct_type,
+            path: self.path,
+            schemas: self.schemas,
+        }
+        .deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+        Ok(Property::Struct(sv))
+    }
+}
+
+struct PalStructValueSeed<'a> {
+    struct_type: &'a StructType,
+    path: &'a str,
+    schemas: &'a PropertySchemas,
+}
+
+impl<'de> DeserializeSeed<'de> for PalStructValueSeed<'_> {
+    type Value = StructValue;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match self.struct_type {
+            StructType::PalCharacterData => Ok(StructValue::PalCharacterData(
+                PalCharacterDataSeed {
+                    path: self.path,
+                    schemas: self.schemas,
+                }
+                .deserialize(deserializer)?,
+            )),
+            StructType::PalItemContainer => Ok(StructValue::PalItemContainer(
+                palworld::PalItemContainer::deserialize(deserializer)?,
+            )),
+            StructType::PalGroupData => Ok(StructValue::PalGroupData(
+                palworld::PalGroupData::deserialize(deserializer)?,
+            )),
+            StructType::PalDynamicItem => Ok(StructValue::PalDynamicItem(
+                PalDynamicItemSeed {
+                    path: self.path,
+                    schemas: self.schemas,
+                }
+                .deserialize(deserializer)?,
+            )),
+            StructType::PalBuildProcess => Ok(StructValue::PalBuildProcess(
+                palworld::PalBuildProcess::deserialize(deserializer)?,
+            )),
+            StructType::PalGuildItemStorage => Ok(StructValue::PalGuildItemStorage(
+                palworld::PalGuildItemStorage::deserialize(deserializer)?,
+            )),
+            StructType::PalGuildLab => Ok(StructValue::PalGuildLab(
+                palworld::PalGuildLab::deserialize(deserializer)?,
+            )),
+            StructType::PalItemContainerSlots => Ok(StructValue::PalItemContainerSlots(
+                palworld::PalItemContainerSlot::deserialize(deserializer)?,
+            )),
+            StructType::PalCharacterContainer => Ok(StructValue::PalCharacterContainer(
+                palworld::PalCharacterContainer::deserialize(deserializer)?,
+            )),
+            StructType::PalConnector => Ok(StructValue::PalConnector(
+                palworld::PalConnector::deserialize(deserializer)?,
+            )),
+            StructType::PalBaseCamp => Ok(StructValue::PalBaseCamp(
+                palworld::PalBaseCamp::deserialize(deserializer)?,
+            )),
+            StructType::PalWork => Ok(StructValue::PalWork(palworld::PalWork::deserialize(
+                deserializer,
+            )?)),
+            StructType::PalMapModel => Ok(StructValue::PalMapModel(
+                palworld::PalMapModel::deserialize(deserializer)?,
+            )),
+            StructType::PalMapConcreteModel => Ok(StructValue::PalMapConcreteModel(
+                PalMapConcreteModelSeed {
+                    path: self.path,
+                    schemas: self.schemas,
+                }
+                .deserialize(deserializer)?,
+            )),
+            StructType::PalMapConcreteModelModule => Ok(StructValue::PalMapConcreteModelModule(
+                palworld::PalMapConcreteModelModule::deserialize(deserializer)?,
+            )),
+            other => Err(serde::de::Error::custom(format!(
+                "not a Palworld struct type: {other:?}"
+            ))),
+        }
+    }
+}
+
+struct PalDynamicItemSeed<'a> {
+    path: &'a str,
+    schemas: &'a PropertySchemas,
+}
+
+impl<'de> DeserializeSeed<'de> for PalDynamicItemSeed<'_> {
+    type Value = PalDynamicItem;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for PalDynamicItemSeed<'_> {
+    type Value = PalDynamicItem;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("PalDynamicItem map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut id = None;
+        let mut static_id = None;
+        let mut item_type = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "id" => id = Some(map.next_value()?),
+                "static_id" => static_id = Some(map.next_value()?),
+                "item_type" => {
+                    item_type = Some(map.next_value_seed(PalDynamicItemTypeSeed {
+                        path: self.path,
+                        schemas: self.schemas,
+                    })?)
+                }
+                other => {
+                    return Err(serde::de::Error::unknown_field(
+                        other,
+                        &["id", "static_id", "item_type"],
+                    ))
+                }
+            }
+        }
+
+        Ok(PalDynamicItem {
+            id: id.ok_or_else(|| serde::de::Error::missing_field("id"))?,
+            static_id: static_id.ok_or_else(|| serde::de::Error::missing_field("static_id"))?,
+            item_type: item_type.ok_or_else(|| serde::de::Error::missing_field("item_type"))?,
+        })
+    }
+}
+
+struct PalDynamicItemTypeSeed<'a> {
+    path: &'a str,
+    schemas: &'a PropertySchemas,
+}
+
+impl<'de> DeserializeSeed<'de> for PalDynamicItemTypeSeed<'_> {
+    type Value = PalDynamicItemType;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for PalDynamicItemTypeSeed<'_> {
+    type Value = PalDynamicItemType;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("externally tagged PalDynamicItemType variant")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        #[derive(Deserialize)]
+        struct UnknownContent {
+            trailer: Vec<u8>,
+        }
+        #[derive(Deserialize)]
+        struct ArmorContent {
+            leading_bytes: [u8; 4],
+            durability: f32,
+            trailing_bytes: [u8; 4],
+        }
+        #[derive(Deserialize)]
+        struct WeaponContent {
+            leading_bytes: [u8; 4],
+            durability: f32,
+            remaining_bullets: i32,
+            passive_skill_list: Vec<String>,
+            trailing_bytes: [u8; 4],
+        }
+
+        let variant = map
+            .next_key::<String>()?
+            .ok_or_else(|| serde::de::Error::custom("expected PalDynamicItemType variant"))?;
+        Ok(match variant.as_str() {
+            "Unknown" => {
+                let content: UnknownContent = map.next_value()?;
+                PalDynamicItemType::Unknown {
+                    trailer: content.trailer,
+                }
+            }
+            "Egg" => map.next_value_seed(PalDynamicItemEggSeed {
+                path: self.path,
+                schemas: self.schemas,
+            })?,
+            "Armor" => {
+                let content: ArmorContent = map.next_value()?;
+                PalDynamicItemType::Armor {
+                    leading_bytes: content.leading_bytes,
+                    durability: content.durability,
+                    trailing_bytes: content.trailing_bytes,
+                }
+            }
+            "Weapon" => {
+                let content: WeaponContent = map.next_value()?;
+                PalDynamicItemType::Weapon {
+                    leading_bytes: content.leading_bytes,
+                    durability: content.durability,
+                    remaining_bullets: content.remaining_bullets,
+                    passive_skill_list: content.passive_skill_list,
+                    trailing_bytes: content.trailing_bytes,
+                }
+            }
+            other => {
+                return Err(serde::de::Error::unknown_variant(
+                    other,
+                    &["Unknown", "Egg", "Armor", "Weapon"],
+                ))
+            }
+        })
+    }
+}
+
+struct PalDynamicItemEggSeed<'a> {
+    path: &'a str,
+    schemas: &'a PropertySchemas,
+}
+
+impl<'de> DeserializeSeed<'de> for PalDynamicItemEggSeed<'_> {
+    type Value = PalDynamicItemType;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for PalDynamicItemEggSeed<'_> {
+    type Value = PalDynamicItemType;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("PalDynamicItemType::Egg map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut leading_bytes = None;
+        let mut character_id = None;
+        let mut object = None;
+        let mut trailing_bytes = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "leading_bytes" => leading_bytes = Some(map.next_value()?),
+                "character_id" => character_id = Some(map.next_value()?),
+                "object" => {
+                    object = Some(map.next_value_seed(PropertiesSeed {
+                        path: self.path,
+                        schemas: self.schemas,
+                    })?)
+                }
+                "trailing_bytes" => trailing_bytes = Some(map.next_value()?),
+                other => {
+                    return Err(serde::de::Error::unknown_field(
+                        other,
+                        &["leading_bytes", "character_id", "object", "trailing_bytes"],
+                    ))
+                }
+            }
+        }
+
+        Ok(PalDynamicItemType::Egg {
+            leading_bytes: leading_bytes
+                .ok_or_else(|| serde::de::Error::missing_field("leading_bytes"))?,
+            character_id: character_id
+                .ok_or_else(|| serde::de::Error::missing_field("character_id"))?,
+            object: object.ok_or_else(|| serde::de::Error::missing_field("object"))?,
+            trailing_bytes: trailing_bytes
+                .ok_or_else(|| serde::de::Error::missing_field("trailing_bytes"))?,
+        })
+    }
+}
+
+struct PalMapConcreteModelSeed<'a> {
+    path: &'a str,
+    schemas: &'a PropertySchemas,
+}
+
+impl<'de> DeserializeSeed<'de> for PalMapConcreteModelSeed<'_> {
+    type Value = PalMapConcreteModel;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for PalMapConcreteModelSeed<'_> {
+    type Value = PalMapConcreteModel;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("PalMapConcreteModel map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut instance_id = None;
+        let mut model_instance_id = None;
+        let mut concrete_model_type = None;
+        let mut model_data = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "instance_id" => instance_id = Some(map.next_value()?),
+                "model_instance_id" => model_instance_id = Some(map.next_value()?),
+                "concrete_model_type" => concrete_model_type = Some(map.next_value()?),
+                "model_data" => {
+                    model_data = Some(map.next_value_seed(PalMapConcreteModelVariantSeed {
+                        path: self.path,
+                        schemas: self.schemas,
+                    })?)
+                }
+                other => {
+                    return Err(serde::de::Error::unknown_field(
+                        other,
+                        &[
+                            "instance_id",
+                            "model_instance_id",
+                            "concrete_model_type",
+                            "model_data",
+                        ],
+                    ))
+                }
+            }
+        }
+
+        Ok(PalMapConcreteModel {
+            instance_id: instance_id
+                .ok_or_else(|| serde::de::Error::missing_field("instance_id"))?,
+            model_instance_id: model_instance_id
+                .ok_or_else(|| serde::de::Error::missing_field("model_instance_id"))?,
+            concrete_model_type: concrete_model_type
+                .ok_or_else(|| serde::de::Error::missing_field("concrete_model_type"))?,
+            model_data: model_data.ok_or_else(|| serde::de::Error::missing_field("model_data"))?,
+        })
+    }
+}
+
+struct PalMapConcreteModelVariantSeed<'a> {
+    path: &'a str,
+    schemas: &'a PropertySchemas,
+}
+
+impl<'de> DeserializeSeed<'de> for PalMapConcreteModelVariantSeed<'_> {
+    type Value = PalMapConcreteModelVariant;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for PalMapConcreteModelVariantSeed<'_> {
+    type Value = PalMapConcreteModelVariant;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("externally tagged PalMapConcreteModelVariant")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        use PalMapConcreteModelVariant as V;
+
+        let variant = map.next_key::<String>()?.ok_or_else(|| {
+            serde::de::Error::custom("expected PalMapConcreteModelVariant variant")
+        })?;
+        Ok(match variant.as_str() {
+            "CharacterTeamMission" => V::CharacterTeamMission(map.next_value()?),
+            "FarmSkillFruits" => V::FarmSkillFruits(map.next_value()?),
+            "SupplyStorage" => V::SupplyStorage(map.next_value()?),
+            "ItemBooth" => V::ItemBooth(map.next_value()?),
+            "EnergyStorage" => V::EnergyStorage(map.next_value()?),
+            "DeathDroppedCharacter" => V::DeathDroppedCharacter(map.next_value()?),
+            "ConvertItem" => V::ConvertItem(map.next_value()?),
+            "PickupItemOnLevel" => V::PickupItemOnLevel(map.next_value()?),
+            "DropItem" => V::DropItem(map.next_value()?),
+            "ItemDropOnDamag" => V::ItemDropOnDamag(map.next_value()?),
+            "DeathPenaltyStorage" => V::DeathPenaltyStorage(map.next_value()?),
+            "DefenseBulletLauncher" => V::DefenseBulletLauncher(map.next_value()?),
+            "GenerateEnergy" => V::GenerateEnergy(map.next_value()?),
+            "FarmBlockV2" => V::FarmBlockV2(map.next_value()?),
+            "FastTravelPoint" => V::FastTravelPoint(map.next_value()?),
+            "ShippingItem" => V::ShippingItem(map.next_value()?),
+            "ProductItem" => V::ProductItem(map.next_value()?),
+            "RecoverOtomo" => V::RecoverOtomo(map.next_value()?),
+            "HatchingEgg" => {
+                V::HatchingEgg(map.next_value_seed(PalMapObjectHatchingEggModelSeed {
+                    path: self.path,
+                    schemas: self.schemas,
+                })?)
+            }
+            "TreasureBox" => V::TreasureBox(map.next_value()?),
+            "BreedFarm" => V::BreedFarm(map.next_value()?),
+            "Signboard" => V::Signboard(map.next_value()?),
+            "Torch" => V::Torch(map.next_value()?),
+            "PalEgg" => V::PalEgg(map.next_value()?),
+            "BaseCampPoint" => V::BaseCampPoint(map.next_value()?),
+            "ItemChest" => V::ItemChest(map.next_value()?),
+            "ItemChestAffectCorruption" => V::ItemChestAffectCorruption(map.next_value()?),
+            "Unknown" => V::Unknown(map.next_value()?),
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown PalMapConcreteModelVariant: {other}"
+                )))
+            }
+        })
     }
 }
