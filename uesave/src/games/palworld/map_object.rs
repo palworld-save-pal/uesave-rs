@@ -11,13 +11,14 @@ fn determine_object_id(properties: &Properties) -> Result<String> {
     let map_object_id = properties
         .0
         .get(&PropertyKey::from("MapObjectId"))
-        .ok_or_else(|| crate::Error::Other("MapObjectSaveData element is missing MapObjectId".to_string()))?;
+        .ok_or_else(|| {
+            crate::Error::Other("MapObjectSaveData element is missing MapObjectId".to_string())
+        })?;
     match map_object_id {
         Property::Str(object_id) => Ok(object_id.clone()),
         Property::Name(object_id) => Ok(object_id.clone()),
         other => Err(crate::Error::Other(format!(
-            "MapObjectId expected as string or name, but found: {:?}",
-            other
+            "MapObjectId expected as string or name, but found: {other:?}"
         ))),
     }
 }
@@ -42,30 +43,55 @@ fn convert_embedded<R: Read + Seek>(
         return Ok(());
     }
     let bytes = bytes.clone();
+    let len = bytes.len() as u64;
 
     for segment in scope_segments {
         ar.scope.push(segment);
     }
     let result = (|ar: &mut SaveGameArchive<R>| -> Result<StructValue> {
-        let parsed = ar.with_nested(Cursor::new(bytes), parse)?;
+        let parsed = ar.with_nested(Cursor::new(bytes), |nested| {
+            let parsed = parse(nested)?;
+            // Refuse partial parses: unconsumed bytes would be lost on rewrite
+            let consumed = nested.stream_position()?;
+            if consumed != len {
+                return Err(crate::Error::Other(format!(
+                    "Palworld struct {struct_type:?} consumed only {consumed} of {len} bytes"
+                )));
+            }
+            Ok(parsed)
+        })?;
         ar.schemas.borrow_mut().record(
             ar.scope.path(),
             PropertyTagPartial {
                 id: None,
                 data: PropertyTagDataPartial::Struct {
-                    struct_type,
+                    struct_type: struct_type.clone(),
                     id: Default::default(),
                 },
             },
         );
         Ok(parsed)
     })(ar);
+    let path = ar.scope.path();
     for _ in scope_segments {
         ar.scope.pop();
     }
 
-    *prop = Property::Struct(result?);
-    Ok(())
+    match result {
+        Ok(parsed) => {
+            *prop = Property::Struct(parsed);
+            Ok(())
+        }
+        Err(e) if ar.error_to_raw() => {
+            if ar.log() {
+                eprintln!(
+                    "Warning: Failed to parse Palworld data at '{path}', leaving as raw bytes: {e}"
+                );
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub(crate) fn parse_map_object_with_context<R: Read + Seek>(
@@ -83,15 +109,16 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek>(
                 raw_data_prop,
                 &["Model", "RawData"],
                 StructType::PalMapModel,
-                |nested| Ok(StructValue::PalMapModel(PalMapModel::read(nested)?)),
+                |nested| Ok(StructValue::PalMapModel(PalMapModel::read(nested)?.into())),
             )?;
         }
 
         if let Some(Property::Struct(StructValue::Struct(connector_properties))) =
             model_properties.0.get_mut(&PropertyKey::from("Connector"))
         {
-            if let Some(raw_data_prop) =
-                connector_properties.0.get_mut(&PropertyKey::from("RawData"))
+            if let Some(raw_data_prop) = connector_properties
+                .0
+                .get_mut(&PropertyKey::from("RawData"))
             {
                 convert_embedded(
                     ar,
@@ -104,7 +131,9 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek>(
         }
 
         if let Some(Property::Struct(StructValue::Struct(build_process_properties))) =
-            model_properties.0.get_mut(&PropertyKey::from("BuildProcess"))
+            model_properties
+                .0
+                .get_mut(&PropertyKey::from("BuildProcess"))
         {
             if let Some(raw_data_prop) = build_process_properties
                 .0
@@ -136,7 +165,7 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek>(
                 StructType::PalMapConcreteModel,
                 |nested| {
                     Ok(StructValue::PalMapConcreteModel(
-                        PalMapConcreteModel::read_with_object_id(nested, &map_object_id)?,
+                        PalMapConcreteModel::read_with_object_id(nested, &map_object_id)?.into(),
                     ))
                 },
             )?;
@@ -155,15 +184,13 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek>(
                 };
 
                 if let Property::Struct(StructValue::Struct(value_props)) = &mut entry.value {
-                    let custom_version_data = match value_props
-                        .0
-                        .get(&PropertyKey::from("CustomVersionData"))
-                    {
-                        Some(Property::Array(ValueVec::Byte(ByteArray::Byte(custom_bytes)))) => {
-                            custom_bytes.clone()
-                        }
-                        _ => Vec::new(),
-                    };
+                    let custom_version_data =
+                        match value_props.0.get(&PropertyKey::from("CustomVersionData")) {
+                            Some(Property::Array(ValueVec::Byte(ByteArray::Byte(
+                                custom_bytes,
+                            )))) => custom_bytes.clone(),
+                            _ => Vec::new(),
+                        };
 
                     if let Some(raw_data_prop) =
                         value_props.0.get_mut(&PropertyKey::from("RawData"))
@@ -177,7 +204,9 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek>(
                         convert_embedded(
                             ar,
                             raw_data_prop,
-                            &["ConcreteModel", "ModuleMap", "Value", "RawData"],
+                            // Map entries do not push Key/Value scope segments,
+                            // so value properties live directly under the map path
+                            &["ConcreteModel", "ModuleMap", "RawData"],
                             StructType::PalMapConcreteModelModule,
                             move |nested| {
                                 Ok(StructValue::PalMapConcreteModelModule(
