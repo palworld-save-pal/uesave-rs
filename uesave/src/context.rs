@@ -25,6 +25,10 @@ impl Types {
         // probably should store keys as Vec<String>
         self.types.insert(path, t);
     }
+    /// Look up the registered type for an exact path
+    pub fn get(&self, path: &str) -> Option<&StructType> {
+        self.types.get(path)
+    }
 }
 
 /// Storage for property schemas (tags) separated from property data.

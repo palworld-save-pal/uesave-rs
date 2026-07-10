@@ -298,3 +298,47 @@ pub(crate) fn process_property_for_write<W: Write + Seek>(
         _ => Ok(None),
     }
 }
+
+#[cfg(test)]
+mod skip_list_parity_tests {
+    use super::*;
+
+    /// Paths intentionally treated as opaque byte payloads.
+    ///
+    /// For ordinary property traversal, this crate does not persist a `.Value`
+    /// path segment when descending through a `MapProperty` value. `Value`/`Key`
+    /// are only used as transient scope components while resolving the
+    /// `MapProperty` key/value `StructType` tag (see `PropertyType::MapProperty`
+    /// in `lib.rs`).
+    ///
+    /// As a result, the canonical internal path for that branch is
+    /// `BaseCampSaveData.ModuleMap`.
+    const SKIP_LIST: &[&str] = &[
+        "worldSaveData.FoliageGridSaveDataMap",
+        "worldSaveData.MapObjectSpawnerInStageSaveData",
+        "worldSaveData.DungeonSaveData",
+        "worldSaveData.EnemyCampSaveData",
+        "worldSaveData.InvaderSaveData",
+        "worldSaveData.DungeonPointMarkerSaveData",
+        "worldSaveData.GameTimeSaveData",
+        "worldSaveData.OilrigSaveData",
+        "worldSaveData.SupplySaveData",
+        "worldSaveData.BaseCampSaveData.ModuleMap",
+    ];
+
+    #[test]
+    fn test_no_typed_codec_under_python_skip_list() {
+        let types = palworld_types();
+        for skip_path in SKIP_LIST {
+            for suffix in ["", ".RawData", ".Value.RawData"] {
+                let candidate = format!("{skip_path}{suffix}");
+                if let Some(struct_type) = types.get(&candidate) {
+                    assert!(
+                        !is_pal_struct_type(struct_type),
+                        "typed Palworld codec registered under Python skip-listed path: {candidate}"
+                    );
+                }
+            }
+        }
+    }
+}
