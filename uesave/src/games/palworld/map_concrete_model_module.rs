@@ -32,7 +32,7 @@ impl PalModuleSlotIndexes {
 pub struct PalPlayerLockInfo {
     pub player_uid: FGuid,
     pub try_failed_count: i32,
-    pub try_success_cache: bool,
+    pub try_success_cache: u32,
 }
 
 impl PalPlayerLockInfo {
@@ -40,13 +40,13 @@ impl PalPlayerLockInfo {
         Ok(PalPlayerLockInfo {
             player_uid: FGuid::read(ar)?,
             try_failed_count: ar.read_i32::<LE>()?,
-            try_success_cache: ar.read_u32::<LE>()? > 0,
+            try_success_cache: ar.read_u32::<LE>()?,
         })
     }
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
         self.player_uid.write(ar)?;
         ar.write_i32::<LE>(self.try_failed_count)?;
-        ar.write_u32::<LE>(if self.try_success_cache { 1 } else { 0 })?;
+        ar.write_u32::<LE>(self.try_success_cache)?;
         Ok(())
     }
 }
@@ -57,7 +57,7 @@ pub enum PalMapConcreteModelModuleData {
         target_container_id: FGuid,
         slot_attribute_indexes: Vec<PalModuleSlotIndexes>,
         all_slot_attribute: Vec<u8>,
-        drop_item_at_disposed: bool,
+        drop_item_at_disposed: u32,
         usage_type: u8,
         trailing_bytes: [u8; 4],
     },
@@ -88,10 +88,59 @@ pub enum PalMapConcreteModelModuleData {
         unlock_item: String,
         trailing_bytes: [u8; 12],
     },
+    GuildSecurity {
+        /// `EPalGuildRole` values.
+        allowed_roles: Vec<u8>,
+        trailing_bytes: [u8; 4],
+    },
+    ColorSetting {
+        color_entries: Vec<PalColorSettingEntry>,
+        trailing_bytes: [u8; 4],
+    },
+    OperationalLoad {
+        current_load: f32,
+        trailing_bytes: [u8; 8],
+    },
     Unknown {
         module_type: String,
         raw_bytes: Vec<u8>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PalColorSettingEntry {
+    pub key: String,
+    pub color: PalLinearColor,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PalLinearColor {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+impl PalColorSettingEntry {
+    pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(PalColorSettingEntry {
+            key: ar.read_string()?,
+            color: PalLinearColor {
+                r: ar.read_f32::<LE>()?,
+                g: ar.read_f32::<LE>()?,
+                b: ar.read_f32::<LE>()?,
+                a: ar.read_f32::<LE>()?,
+            },
+        })
+    }
+    pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_string(&self.key)?;
+        ar.write_f32::<LE>(self.color.r)?;
+        ar.write_f32::<LE>(self.color.g)?;
+        ar.write_f32::<LE>(self.color.b)?;
+        ar.write_f32::<LE>(self.color.a)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -154,7 +203,7 @@ impl PalMapConcreteModelModule {
                         for _ in 0..all_slot_count {
                             all_slot_attribute.push(byte_reader.read_u8()?);
                         }
-                        let drop_item_at_disposed = byte_reader.read_u32::<LE>()? > 0;
+                        let drop_item_at_disposed = byte_reader.read_u32::<LE>()?;
                         let usage_type = byte_reader.read_u8()?;
                         let mut trailing_bytes = [0u8; 4];
                         byte_reader.read_exact(&mut trailing_bytes)?;
@@ -221,6 +270,42 @@ impl PalMapConcreteModelModule {
                             trailing_bytes,
                         })
                     }
+                    "EPalMapObjectConcreteModelModuleType::GuildSecurity" => {
+                        let role_count = byte_reader.read_u32::<LE>()?;
+                        let mut allowed_roles = Vec::with_capacity(role_count as usize);
+                        for _ in 0..role_count {
+                            allowed_roles.push(byte_reader.read_u8()?);
+                        }
+                        let mut trailing_bytes = [0u8; 4];
+                        byte_reader.read_exact(&mut trailing_bytes)?;
+                        Ok(PalMapConcreteModelModuleData::GuildSecurity {
+                            allowed_roles,
+                            trailing_bytes,
+                        })
+                    }
+                    "EPalMapObjectConcreteModelModuleType::ColorSetting" => {
+                        let entry_count = byte_reader.read_u32::<LE>()?;
+                        let color_entries = crate::read_array(
+                            entry_count,
+                            byte_reader,
+                            PalColorSettingEntry::read,
+                        )?;
+                        let mut trailing_bytes = [0u8; 4];
+                        byte_reader.read_exact(&mut trailing_bytes)?;
+                        Ok(PalMapConcreteModelModuleData::ColorSetting {
+                            color_entries,
+                            trailing_bytes,
+                        })
+                    }
+                    "EPalMapObjectConcreteModelModuleType::OperationalLoad" => {
+                        let current_load = byte_reader.read_f32::<LE>()?;
+                        let mut trailing_bytes = [0u8; 8];
+                        byte_reader.read_exact(&mut trailing_bytes)?;
+                        Ok(PalMapConcreteModelModuleData::OperationalLoad {
+                            current_load,
+                            trailing_bytes,
+                        })
+                    }
                     "EPalMapObjectConcreteModelModuleType::Energy" => {
                         Ok(PalMapConcreteModelModuleData::Energy)
                     }
@@ -280,7 +365,7 @@ impl PalMapConcreteModelModule {
                 for attr in all_slot_attribute {
                     ar.write_u8(*attr)?;
                 }
-                ar.write_u32::<LE>(if *drop_item_at_disposed { 1 } else { 0 })?;
+                ar.write_u32::<LE>(*drop_item_at_disposed)?;
                 ar.write_u8(*usage_type)?;
                 ar.write_all(trailing_bytes)?;
             }
@@ -324,6 +409,33 @@ impl PalMapConcreteModelModule {
                 trailing_bytes,
             } => {
                 ar.write_string(unlock_item)?;
+                ar.write_all(trailing_bytes)?;
+            }
+            PalMapConcreteModelModuleData::GuildSecurity {
+                allowed_roles,
+                trailing_bytes,
+            } => {
+                ar.write_u32::<LE>(allowed_roles.len() as u32)?;
+                for role in allowed_roles {
+                    ar.write_u8(*role)?;
+                }
+                ar.write_all(trailing_bytes)?;
+            }
+            PalMapConcreteModelModuleData::ColorSetting {
+                color_entries,
+                trailing_bytes,
+            } => {
+                ar.write_u32::<LE>(color_entries.len() as u32)?;
+                for entry in color_entries {
+                    entry.write(ar)?;
+                }
+                ar.write_all(trailing_bytes)?;
+            }
+            PalMapConcreteModelModuleData::OperationalLoad {
+                current_load,
+                trailing_bytes,
+            } => {
+                ar.write_f32::<LE>(*current_load)?;
                 ar.write_all(trailing_bytes)?;
             }
             PalMapConcreteModelModuleData::Energy

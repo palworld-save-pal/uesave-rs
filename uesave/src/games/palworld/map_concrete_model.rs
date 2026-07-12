@@ -1,5 +1,5 @@
 use crate::{
-    games::palworld::{PalItemAndNum, PalItemId},
+    games::palworld::{bytes_remaining, PalInstanceId, PalItemAndNum, PalItemId},
     ArchiveReader, ArchiveType, ArchiveWriter, FGuid, Properties, Result, SaveGameArchiveType,
 };
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 pub struct PalMapObjectCharacterTeamMissionModel {
     pub leading_bytes: [u8; 4],
     pub mission_id: String,
-    pub unknown_bytes: [u8; 4],
+    pub assigned_individuals: Vec<PalInstanceId>,
     pub state: u8,
     pub start_time: i64,
     pub trailing_bytes: [u8; 4],
@@ -26,10 +26,9 @@ impl PalMapObjectCharacterTeamMissionModel {
                 bytes
             },
             mission_id: ar.read_string()?,
-            unknown_bytes: {
-                let mut bytes = [0u8; 4];
-                ar.read_exact(&mut bytes)?;
-                bytes
+            assigned_individuals: {
+                let count = ar.read_u32::<LE>()?;
+                crate::read_array(count, ar, PalInstanceId::read)?
             },
             state: ar.read_u8()?,
             start_time: ar.read_i64::<LE>()?,
@@ -43,7 +42,10 @@ impl PalMapObjectCharacterTeamMissionModel {
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
         ar.write_all(&self.leading_bytes)?;
         ar.write_string(&self.mission_id)?;
-        ar.write_all(&self.unknown_bytes)?;
+        ar.write_u32::<LE>(self.assigned_individuals.len() as u32)?;
+        for individual in &self.assigned_individuals {
+            individual.write(ar)?;
+        }
         ar.write_u8(self.state)?;
         ar.write_i64::<LE>(self.start_time)?;
         ar.write_all(&self.trailing_bytes)?;
@@ -271,24 +273,24 @@ impl PalMapObjectConvertItemModel {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PalMapObjectPickupItemOnLevelModel {
-    pub auto_picked_up: bool,
+    pub auto_picked_up: u32,
 }
 
 impl PalMapObjectPickupItemOnLevelModel {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
         Ok(PalMapObjectPickupItemOnLevelModel {
-            auto_picked_up: ar.read_u32::<LE>()? > 0,
+            auto_picked_up: ar.read_u32::<LE>()?,
         })
     }
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
-        ar.write_u32::<LE>(if self.auto_picked_up { 1 } else { 0 })?;
+        ar.write_u32::<LE>(self.auto_picked_up)?;
         Ok(())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PalMapObjectDropItemModel {
-    pub auto_picked_up: bool,
+    pub auto_picked_up: u32,
     pub pickupable_player_uid: FGuid,
     pub remove_pickup_guard_timer_handle: i64,
     pub item_id: PalItemId,
@@ -298,7 +300,7 @@ pub struct PalMapObjectDropItemModel {
 impl PalMapObjectDropItemModel {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
         Ok(PalMapObjectDropItemModel {
-            auto_picked_up: ar.read_u32::<LE>()? > 0,
+            auto_picked_up: ar.read_u32::<LE>()?,
             pickupable_player_uid: FGuid::read(ar)?,
             remove_pickup_guard_timer_handle: ar.read_i64::<LE>()?,
             item_id: PalItemId::read(ar)?,
@@ -310,7 +312,7 @@ impl PalMapObjectDropItemModel {
         })
     }
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
-        ar.write_u32::<LE>(if self.auto_picked_up { 1 } else { 0 })?;
+        ar.write_u32::<LE>(self.auto_picked_up)?;
         self.pickupable_player_uid.write(ar)?;
         ar.write_i64::<LE>(self.remove_pickup_guard_timer_handle)?;
         self.item_id.write(ar)?;
@@ -348,7 +350,7 @@ impl PalMapObjectItemDropOnDamagModel {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PalMapObjectDeathPenaltyStorageModel {
-    pub auto_destroy_if_empty: bool,
+    pub auto_destroy_if_empty: u32,
     pub owner_player_uid: FGuid,
     pub created_at: i64,
     pub trailing_bytes: Vec<u8>,
@@ -356,7 +358,7 @@ pub struct PalMapObjectDeathPenaltyStorageModel {
 
 impl PalMapObjectDeathPenaltyStorageModel {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
-        let auto_destroy_if_empty = ar.read_u32::<LE>()? > 0;
+        let auto_destroy_if_empty = ar.read_u32::<LE>()?;
         let owner_player_uid = FGuid::read(ar)?;
         let created_at = ar.read_i64::<LE>()?;
         let mut trailing_bytes = Vec::new();
@@ -369,7 +371,7 @@ impl PalMapObjectDeathPenaltyStorageModel {
         })
     }
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
-        ar.write_u32::<LE>(if self.auto_destroy_if_empty { 1 } else { 0 })?;
+        ar.write_u32::<LE>(self.auto_destroy_if_empty)?;
         self.owner_player_uid.write(ar)?;
         ar.write_i64::<LE>(self.created_at)?;
         ar.write_all(&self.trailing_bytes)?;
@@ -677,10 +679,42 @@ impl PalMapObjectTreasureBoxModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PalBreedFarmBreeding {
+    pub last_proceed_worker_individual_ids: Vec<PalInstanceId>,
+    pub target_breed_item_ids: Vec<String>,
+}
+
+impl PalBreedFarmBreeding {
+    pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        let worker_count = ar.read_u32::<LE>()?;
+        let last_proceed_worker_individual_ids =
+            crate::read_array(worker_count, ar, PalInstanceId::read)?;
+        let item_count = ar.read_u32::<LE>()?;
+        let target_breed_item_ids = crate::read_array(item_count, ar, |r| r.read_string())?;
+        Ok(PalBreedFarmBreeding {
+            last_proceed_worker_individual_ids,
+            target_breed_item_ids,
+        })
+    }
+    pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_u32::<LE>(self.last_proceed_worker_individual_ids.len() as u32)?;
+        for worker in &self.last_proceed_worker_individual_ids {
+            worker.write(ar)?;
+        }
+        ar.write_u32::<LE>(self.target_breed_item_ids.len() as u32)?;
+        for item_id in &self.target_breed_item_ids {
+            ar.write_string(item_id)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PalMapObjectBreedFarmModel {
     pub leading_bytes: [u8; 4],
     pub spawned_egg_instance_ids: Vec<FGuid>,
     pub trailing_bytes: [u8; 4],
+    pub breeding: Option<PalBreedFarmBreeding>,
 }
 
 impl PalMapObjectBreedFarmModel {
@@ -697,10 +731,16 @@ impl PalMapObjectBreedFarmModel {
             ar.read_exact(&mut bytes)?;
             bytes
         };
+        let breeding = if bytes_remaining(ar)? > 0 {
+            Some(PalBreedFarmBreeding::read(ar)?)
+        } else {
+            None
+        };
         Ok(PalMapObjectBreedFarmModel {
             leading_bytes,
             spawned_egg_instance_ids,
             trailing_bytes,
+            breeding,
         })
     }
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
@@ -710,6 +750,9 @@ impl PalMapObjectBreedFarmModel {
             egg_id.write(ar)?;
         }
         ar.write_all(&self.trailing_bytes)?;
+        if let Some(breeding) = &self.breeding {
+            breeding.write(ar)?;
+        }
         Ok(())
     }
 }
@@ -777,7 +820,7 @@ impl PalMapObjectTorchModel {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PalMapObjectPalEggModel {
-    pub auto_picked_up: bool,
+    pub auto_picked_up: u32,
     pub pickupdable_player_uid: FGuid,
     pub remove_pickup_guard_timer_handle: i64,
 }
@@ -785,13 +828,13 @@ pub struct PalMapObjectPalEggModel {
 impl PalMapObjectPalEggModel {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
         Ok(PalMapObjectPalEggModel {
-            auto_picked_up: ar.read_u32::<LE>()? > 0,
+            auto_picked_up: ar.read_u32::<LE>()?,
             pickupdable_player_uid: FGuid::read(ar)?,
             remove_pickup_guard_timer_handle: ar.read_i64::<LE>()?,
         })
     }
     pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
-        ar.write_u32::<LE>(if self.auto_picked_up { 1 } else { 0 })?;
+        ar.write_u32::<LE>(self.auto_picked_up)?;
         self.pickupdable_player_uid.write(ar)?;
         ar.write_i64::<LE>(self.remove_pickup_guard_timer_handle)?;
         Ok(())
@@ -887,6 +930,62 @@ impl PalMapObjectItemChestAffectCorruption {
         ar.write_all(&self.leading_bytes)?;
         self.private_lock_player_uid.write(ar)?;
         ar.write_all(&self.trailing_bytes)?;
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PalLampLight {
+    pub is_manually_turned_off: u32,
+    pub unknown_bytes: [u8; 4],
+}
+
+impl PalLampLight {
+    pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        Ok(PalLampLight {
+            is_manually_turned_off: ar.read_u32::<LE>()?,
+            unknown_bytes: {
+                let mut bytes = [0u8; 4];
+                ar.read_exact(&mut bytes)?;
+                bytes
+            },
+        })
+    }
+    pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_u32::<LE>(self.is_manually_turned_off)?;
+        ar.write_all(&self.unknown_bytes)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PalMapObjectLampModel {
+    pub trailing_bytes: [u8; 4],
+    /// Absent in saves written before the 2026-07 update.
+    pub light: Option<PalLampLight>,
+}
+
+impl PalMapObjectLampModel {
+    pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
+        let trailing_bytes = {
+            let mut bytes = [0u8; 4];
+            ar.read_exact(&mut bytes)?;
+            bytes
+        };
+        let light = if bytes_remaining(ar)? > 0 {
+            Some(PalLampLight::read(ar)?)
+        } else {
+            None
+        };
+        Ok(PalMapObjectLampModel {
+            trailing_bytes,
+            light,
+        })
+    }
+    pub fn write<A: ArchiveWriter>(&self, ar: &mut A) -> Result<()> {
+        ar.write_all(&self.trailing_bytes)?;
+        if let Some(light) = &self.light {
+            light.write(ar)?;
+        }
         Ok(())
     }
 }
@@ -2577,6 +2676,7 @@ pub enum PalMapConcreteModelVariant<T: ArchiveType = SaveGameArchiveType> {
     TreasureBox(PalMapObjectTreasureBoxModel),
     BreedFarm(PalMapObjectBreedFarmModel),
     Signboard(PalMapObjectSignboardModel),
+    Lamp(PalMapObjectLampModel),
     Torch(PalMapObjectTorchModel),
     PalEgg(PalMapObjectPalEggModel),
     BaseCampPoint(PalMapObjectBaseCampPoint),
@@ -2706,6 +2806,9 @@ impl<T: ArchiveType> PalMapConcreteModel<T> {
                     PalMapObjectItemChestAffectCorruption::read(ar)?,
                 )
             }
+            "PalMapObjectLampModel" => {
+                PalMapConcreteModelVariant::Lamp(PalMapObjectLampModel::read(ar)?)
+            }
             _ => PalMapConcreteModelVariant::Unknown(BaseModel::read(ar)?),
         };
 
@@ -2744,6 +2847,7 @@ impl<T: ArchiveType> PalMapConcreteModel<T> {
             PalMapConcreteModelVariant::TreasureBox(model) => model.write(ar)?,
             PalMapConcreteModelVariant::BreedFarm(model) => model.write(ar)?,
             PalMapConcreteModelVariant::Signboard(model) => model.write(ar)?,
+            PalMapConcreteModelVariant::Lamp(model) => model.write(ar)?,
             PalMapConcreteModelVariant::Torch(model) => model.write(ar)?,
             PalMapConcreteModelVariant::PalEgg(model) => model.write(ar)?,
             PalMapConcreteModelVariant::BaseCampPoint(model) => model.write(ar)?,
