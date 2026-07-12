@@ -28,7 +28,7 @@ fn determine_object_id(properties: &Properties) -> Result<String> {
 /// extended by `scope_segments` for the duration of the parse so that nested
 /// schemas are recorded at the right paths, and the schema of the property
 /// itself is updated to the given `struct_type`.
-fn convert_embedded<R: Read + Seek>(
+pub(crate) fn convert_embedded<R: Read + Seek>(
     ar: &mut SaveGameArchive<R>,
     prop: &mut Property,
     scope_segments: &[&str],

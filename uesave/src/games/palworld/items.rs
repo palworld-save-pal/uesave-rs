@@ -1,5 +1,5 @@
 use crate::games::palworld::types::PalDynamicId;
-use crate::games::palworld::PalItemId;
+use crate::games::palworld::{bytes_remaining, PalItemId};
 use crate::{ArchiveReader, ArchiveType, ArchiveWriter, Properties, Result, SaveGameArchiveType};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use serde::{Deserialize, Serialize};
@@ -145,6 +145,7 @@ pub enum PalDynamicItemType<T: ArchiveType = SaveGameArchiveType> {
         durability: f32,
         remaining_bullets: i32,
         passive_skill_list: Vec<String>,
+        unknown_str: Option<String>,
         trailing_bytes: [u8; 4],
     },
 }
@@ -225,6 +226,7 @@ impl<T: ArchiveType> PalDynamicItem<T> {
                 durability,
                 remaining_bullets,
                 passive_skill_list,
+                unknown_str,
                 trailing_bytes,
             } => {
                 ar.write_all(leading_bytes)?;
@@ -234,6 +236,10 @@ impl<T: ArchiveType> PalDynamicItem<T> {
                 ar.write_u32::<LE>(passive_skill_list.len() as u32)?;
                 for skill in passive_skill_list {
                     ar.write_string(skill)?;
+                }
+
+                if let Some(unknown_str) = unknown_str {
+                    ar.write_string(unknown_str)?;
                 }
 
                 ar.write_all(trailing_bytes)?;
@@ -289,6 +295,12 @@ fn try_parse_weapon<T: ArchiveType, A: ArchiveReader<ArchiveType = T>>(
         passive_skill_list.push(ar.read_string()?);
     }
 
+    let unknown_str = if bytes_remaining(ar)? > 4 {
+        Some(ar.read_string()?)
+    } else {
+        None
+    };
+
     let mut trailing_bytes = [0u8; 4];
     ar.read_exact(&mut trailing_bytes)?;
 
@@ -303,6 +315,7 @@ fn try_parse_weapon<T: ArchiveType, A: ArchiveReader<ArchiveType = T>>(
         durability,
         remaining_bullets,
         passive_skill_list,
+        unknown_str,
         trailing_bytes,
     })
 }

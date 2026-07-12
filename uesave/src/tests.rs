@@ -634,3 +634,546 @@ fn test_palworld_character_team_mission_current_layout() -> Result<()> {
     }
     Ok(())
 }
+
+/// Parses a ConcreteModel payload for `object_id`, asserting full consumption
+/// and a byte-exact rewrite, and returns the model variant.
+fn parse_concrete_model(
+    payload: &[u8],
+    object_id: &str,
+) -> Result<games::palworld::PalMapConcreteModelVariant> {
+    let len = payload.len() as u64;
+    let parsed = run(Cursor::new(payload.to_vec()), |ar| {
+        let parsed = games::palworld::PalMapConcreteModel::read_with_object_id(ar, object_id)?;
+        assert_eq!(
+            len,
+            ar.stream_position()?,
+            "parser must consume the entire payload"
+        );
+        Ok(parsed)
+    })?;
+
+    let mut reconstructed = vec![];
+    run(Cursor::new(&mut reconstructed), |ar| parsed.write(ar))?;
+    assert_eq!(payload, reconstructed, "rewrite must be byte-exact");
+
+    Ok(parsed.model_data)
+}
+
+/// The 2026-07 update records the pals sent on an expedition. What older
+/// parsers read as 4 opaque bytes after the mission id is the count of that
+/// array; a mission with pals assigned overruns a parser that ignores it.
+///
+/// Payload is a verbatim `Expedition` ConcreteModel from a live post-update
+/// save: mission `DUNGEON_SNOW` with 99 assigned individuals.
+#[test]
+fn test_palworld_character_team_mission_assigned_individuals() -> Result<()> {
+    let payload = unhex(include_str!("tests_fixtures/expedition_dungeon_snow.hex").trim());
+    let mission = parse_team_mission(&payload)?;
+
+    assert_eq!("DUNGEON_SNOW", mission.mission_id);
+    assert_eq!(99, mission.assigned_individuals.len());
+    assert_eq!(2, mission.state);
+    Ok(())
+}
+
+/// A pre-update expedition has an empty assigned-individuals array, so the
+/// four bytes stay zero and the blob is unchanged.
+#[test]
+fn test_palworld_character_team_mission_without_assigned_individuals() -> Result<()> {
+    let payload = unhex("ecfe5f9758d3c4428804842978fdbbd2d55ed9ffe1e4de458207c8f0ca273ca100000000050000004e6f6e6500000000000110d47bcfad0e000000000000");
+    let mission = parse_team_mission(&payload)?;
+
+    assert_eq!("None", mission.mission_id);
+    assert!(mission.assigned_individuals.is_empty());
+    Ok(())
+}
+
+/// The 2026-07 update appended two arrays to the breed farm: the parent pals
+/// occupying it and the target breed item ids. Pre-update blobs stop after
+/// `trailing_bytes`, so both are optional.
+#[test]
+fn test_palworld_breed_farm_post_update_fields() -> Result<()> {
+    // Verbatim BreedFarm ConcreteModel from a live post-update save: 2 parents.
+    let payload = unhex("2b859e9ea5b64e42ba32fcc588b0680cc0bf79dd16ced94d93dacbb5a709c07c00000000000000009ff437420200000000000000000000000000000000000000a240e9663ae6f547bec44e588681839500000000000000000000000000000000c4f32d8ce30fa4438f9b05384ee8874800000000");
+
+    let farm = match parse_concrete_model(&payload, "BreedFarm")? {
+        games::palworld::PalMapConcreteModelVariant::BreedFarm(farm) => farm,
+        other => panic!("expected BreedFarm, got {other:?}"),
+    };
+
+    assert!(farm.spawned_egg_instance_ids.is_empty());
+    let breeding = farm.breeding.as_ref().expect("post-update breed farm");
+    assert_eq!(2, breeding.last_proceed_worker_individual_ids.len());
+    assert!(breeding.target_breed_item_ids.is_empty());
+    Ok(())
+}
+
+/// A post-update breed farm with nothing in it still carries both arrays, empty
+/// -- eight bytes a pre-update parser would leave unconsumed.
+#[test]
+fn test_palworld_breed_farm_post_update_empty_arrays() -> Result<()> {
+    let payload = unhex("39cdb16fa66c444088b55b143651aa92a37fb2866d164a46a2e0a2ece31d6c410000000000000000000000000000000000000000");
+
+    let farm = match parse_concrete_model(&payload, "BreedFarm")? {
+        games::palworld::PalMapConcreteModelVariant::BreedFarm(farm) => farm,
+        other => panic!("expected BreedFarm, got {other:?}"),
+    };
+
+    let breeding = farm.breeding.as_ref().expect("post-update breed farm");
+    assert!(breeding.last_proceed_worker_individual_ids.is_empty());
+    assert!(breeding.target_breed_item_ids.is_empty());
+    Ok(())
+}
+
+/// Pre-update breed farms end at `trailing_bytes`. The appended arrays are
+/// absent, not empty: writing them back as two empty arrays would append eight
+/// bytes that were never in the blob.
+#[test]
+fn test_palworld_breed_farm_pre_update_blob_roundtrips() -> Result<()> {
+    let payload = unhex(
+        "d4db056ca6fbd641bb535e4fb5316ac728d95e3c66de414a80157342156ee8f4000000000000000000000000",
+    );
+
+    // parse_concrete_model asserts full consumption and a byte-exact rewrite.
+    let farm = match parse_concrete_model(&payload, "BreedFarm")? {
+        games::palworld::PalMapConcreteModelVariant::BreedFarm(farm) => farm,
+        other => panic!("expected BreedFarm, got {other:?}"),
+    };
+
+    assert!(farm.breeding.is_none());
+    Ok(())
+}
+
+/// The 2026-07 lamp light-color update appended `is_manually_turned_off` plus
+/// four bytes to `PalMapObjectLampModel`, which had no fields of its own.
+#[test]
+fn test_palworld_lamp_is_manually_turned_off() -> Result<()> {
+    let cases = [
+        (
+            "e3ad64f7c6a02b4c89109b0135bb9c04828547a8abf294459438d7edd1c9dc61000000000100000000000000",
+            1,
+        ),
+        (
+            "8a40f64b6d901249806024d64c42f47d9a6a133fcce95c4a85c202518d24a0fb000000000000000000000000",
+            0,
+        ),
+    ];
+
+    for (payload, expected_turned_off) in cases {
+        let lamp = match parse_concrete_model(&unhex(payload), "Light_FloorLamp01")? {
+            games::palworld::PalMapConcreteModelVariant::Lamp(lamp) => lamp,
+            other => panic!("expected Lamp, got {other:?}"),
+        };
+        let light = lamp.light.as_ref().expect("post-update lamp");
+        assert_eq!(expected_turned_off, light.is_manually_turned_off);
+    }
+    Ok(())
+}
+
+/// Parses a ConcreteModel module payload, asserting full consumption and a
+/// byte-exact rewrite, and returns the module data.
+fn parse_module(
+    payload: &[u8],
+    module_type: &str,
+) -> Result<games::palworld::PalMapConcreteModelModuleData> {
+    let len = payload.len() as u64;
+    let parsed = run(Cursor::new(payload.to_vec()), |ar| {
+        let parsed = games::palworld::PalMapConcreteModelModule::read_with_module_type(
+            ar,
+            module_type,
+            payload.to_vec(),
+            vec![],
+        )?;
+        assert_eq!(
+            len,
+            ar.stream_position()?,
+            "parser must consume the entire payload"
+        );
+        Ok(parsed)
+    })?;
+
+    let mut reconstructed = vec![];
+    run(Cursor::new(&mut reconstructed), |ar| parsed.write(ar))?;
+    assert_eq!(payload, reconstructed, "rewrite must be byte-exact");
+
+    Ok(parsed.data)
+}
+
+/// `GuildSecurity` (added 2026-07) holds the guild roles allowed to use an
+/// object. Left undecoded it round-trips as opaque bytes, but the roles are not
+/// reachable.
+#[test]
+fn test_palworld_guild_security_module() -> Result<()> {
+    // Verbatim bytes from every GuildSecurity module in a live post-update save:
+    // a two-element role array then the usual 4-byte module trailer.
+    let payload = unhex("02000000020300000000");
+
+    match parse_module(
+        &payload,
+        "EPalMapObjectConcreteModelModuleType::GuildSecurity",
+    )? {
+        games::palworld::PalMapConcreteModelModuleData::GuildSecurity { allowed_roles, .. } => {
+            // EPalGuildRole: SubMaster = 2, Member = 3.
+            assert_eq!(vec![2, 3], allowed_roles);
+            Ok(())
+        }
+        other => panic!("expected GuildSecurity, got {other:?}"),
+    }
+}
+
+/// `ColorSetting` (added 2026-07) stores the light color a player picked for a
+/// lamp, as FName -> FLinearColor entries.
+#[test]
+fn test_palworld_color_setting_module() -> Result<()> {
+    let payload = unhex("010000001b00000050616c4d61704f626a6563744c616d704c69676874436f6c6f7200d43ce53d56ad543fd43ce53d0000803f00000000");
+
+    match parse_module(
+        &payload,
+        "EPalMapObjectConcreteModelModuleType::ColorSetting",
+    )? {
+        games::palworld::PalMapConcreteModelModuleData::ColorSetting { color_entries, .. } => {
+            assert_eq!(1, color_entries.len());
+            assert_eq!("PalMapObjectLampLightColor", color_entries[0].key);
+            assert_eq!(1.0, color_entries[0].color.a);
+            Ok(())
+        }
+        other => panic!("expected ColorSetting, got {other:?}"),
+    }
+}
+
+/// `OperationalLoad` (added 2026-07) holds a single float.
+#[test]
+fn test_palworld_operational_load_module() -> Result<()> {
+    let mut payload = 0.5f32.to_le_bytes().to_vec();
+    payload.extend_from_slice(&[0u8; 8]);
+
+    match parse_module(
+        &payload,
+        "EPalMapObjectConcreteModelModuleType::OperationalLoad",
+    )? {
+        games::palworld::PalMapConcreteModelModuleData::OperationalLoad {
+            current_load, ..
+        } => {
+            assert_eq!(0.5, current_load);
+            Ok(())
+        }
+        other => panic!("expected OperationalLoad, got {other:?}"),
+    }
+}
+
+/// Parses a `GroupSaveDataMap` RawData payload for `group_type`, asserting full
+/// consumption and a byte-exact rewrite.
+fn parse_group(payload: &[u8], group_type: &str) -> Result<games::palworld::PalGroupData> {
+    let len = payload.len() as u64;
+    let parsed = run(Cursor::new(payload.to_vec()), |ar| {
+        let parsed = games::palworld::PalGroupData::read_with_group_type(ar, group_type)?;
+        assert_eq!(
+            len,
+            ar.stream_position()?,
+            "parser must consume the entire payload"
+        );
+        Ok(parsed)
+    })?;
+
+    let mut reconstructed = vec![];
+    run(Cursor::new(&mut reconstructed), |ar| parsed.write(ar))?;
+    assert_eq!(payload, reconstructed, "rewrite must be byte-exact");
+
+    Ok(parsed)
+}
+
+const GUILD: &str = "EPalGroupType::Guild";
+const ORGANIZATION: &str = "EPalGroupType::Organization";
+
+/// The 2026-07 update reshaped the guild tail: chest roles, a per-member role
+/// byte and role permissions. What older parsers read as four opaque bytes was
+/// the count of the (until then always empty) guild marker array.
+#[test]
+fn test_palworld_post_update_guild_decodes_roles_and_permissions() -> Result<()> {
+    // Fresh post-update world, guild "Unnamed Guild", no map markers.
+    let payload = unhex("c29ea93edd3d454b97c4437e963311a42100000030303030303030303030303030303030303030303030303030303030303030310001000000000000000000000000000000010000008ca4a0e244f33244b5b6f77f3f0860fc0000000000000000000000000001000000000000000e000000556e6e616d6564204775696c640000000000000000000000000000000000000000000200000002030000000000000000000000000000000001000000010000000000000000000000000000000100000070b9567f00000000020000004f0001030000000205000000000304050703020000000407040000000000000000");
+
+    let guild = match parse_group(&payload, GUILD)?.data {
+        games::palworld::PalGroupVariant::Guild(guild) => guild,
+        other => panic!("expected Guild, got {other:?}"),
+    };
+
+    assert_eq!("Unnamed Guild", guild.guild_name);
+    assert!(guild.guild_markers.is_empty());
+
+    let tail = match &guild.tail {
+        games::palworld::PalGuildTail::PostUpdate(tail) => tail,
+        other => panic!("expected a post-update guild tail, got {other:?}"),
+    };
+
+    // EPalGuildRole: GuildMaster = 1, SubMaster = 2, Member = 3, Guest = 4.
+    assert_eq!(vec![2, 3], tail.guild_chest_allowed_roles);
+    assert_eq!(1, tail.players.len());
+    assert_eq!("O", tail.players[0].player_info.player_name);
+    assert_eq!(1, tail.players[0].role);
+
+    let permissions: std::collections::HashMap<u8, Vec<u8>> = tail
+        .role_permissions
+        .iter()
+        .map(|rp| (rp.role, rp.permissions.clone()))
+        .collect();
+    assert_eq!(vec![0, 3, 4, 5, 7], permissions[&2]);
+    assert_eq!(vec![4, 7], permissions[&3]);
+    assert_eq!(Vec::<u8>::new(), permissions[&4]);
+    Ok(())
+}
+
+/// Guild map markers, added by the same update, are the array whose count used
+/// to be read as four opaque bytes.
+#[test]
+fn test_palworld_guild_markers() -> Result<()> {
+    let payload = unhex(include_str!("tests_fixtures/guild_with_markers.hex").trim());
+
+    let guild = match parse_group(&payload, GUILD)?.data {
+        games::palworld::PalGroupVariant::Guild(guild) => guild,
+        other => panic!("expected Guild, got {other:?}"),
+    };
+
+    assert_eq!("DeBugging", guild.guild_name);
+    assert_eq!(2, guild.guild_markers.len());
+    assert_eq!(
+        vec![7, 3],
+        guild
+            .guild_markers
+            .iter()
+            .map(|m| m.icon_type)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(0.0, guild.guild_markers[0].icon_location.z.0);
+    Ok(())
+}
+
+/// Guilds saved before the update have no markers and the older, shorter tail.
+/// They must still round-trip: the new fields are absent, not empty.
+#[test]
+fn test_palworld_pre_update_guild_still_roundtrips() -> Result<()> {
+    let payload = unhex("4ba7019b3387a842a71ce44f34337d6d00000000010000001b5e38c0000000000000000000000000e0cd652ee089f548a86422caf4d7654b0000000000000000000000000001000000000000000e000000556e6e616d6564204775696c640000000000000000000000000000000000000000001b5e38c0000000000000000000000000010000001b5e38c00000000000000000000000001020ee3afb19000002000000450000000000");
+
+    let guild = match parse_group(&payload, GUILD)?.data {
+        games::palworld::PalGroupVariant::Guild(guild) => guild,
+        other => panic!("expected Guild, got {other:?}"),
+    };
+
+    assert!(guild.guild_markers.is_empty());
+    match &guild.tail {
+        games::palworld::PalGuildTail::PreUpdate(tail) => assert_eq!(1, tail.players.len()),
+        other => panic!("expected a pre-update guild tail, got {other:?}"),
+    }
+    Ok(())
+}
+
+/// `EPalGroupType::Organization` was not touched by the update; both old and new
+/// blobs must round-trip unchanged.
+#[test]
+fn test_palworld_organization_group_unchanged() -> Result<()> {
+    let payloads = [
+        "6b18d8988c44c2468a602aa18e35d5c2000000000000000000000000020000000000000000",
+        "671203f05e2fc9419cebd80e14ce9d13000000000000000000000000020000000000000000",
+    ];
+
+    for payload in payloads {
+        // parse_group asserts full consumption and a byte-exact rewrite.
+        let group = parse_group(&unhex(payload), ORGANIZATION)?;
+        assert!(matches!(
+            group.data,
+            games::palworld::PalGroupVariant::Organization(_)
+        ));
+    }
+    Ok(())
+}
+
+/// Post-update weapons carry an FName (default "None") between the passive
+/// skill list and the trailing bytes. A parser that does not read it overruns,
+/// fails its end-of-payload check and silently degrades the whole item to an
+/// opaque blob -- it still round-trips, but durability and passive skills are
+/// no longer reachable.
+#[test]
+fn test_palworld_post_update_weapon_decodes_as_weapon() -> Result<()> {
+    // Verbatim DynamicItemSaveData RawData for a SniperRifle_Default.
+    let payload = unhex("00000000000000000000000000000000ef8aa41f4542f82f314924941e5520a214000000536e697065725269666c655f44656661756c7400000000000400000000007a4400000000050000004e6f6e650000000000");
+
+    let item: games::palworld::PalDynamicItem = run(Cursor::new(payload.clone()), |ar| {
+        games::palworld::PalDynamicItem::read(ar)
+    })?;
+
+    let mut reconstructed = vec![];
+    run(Cursor::new(&mut reconstructed), |ar| item.write(ar))?;
+    assert_eq!(payload, reconstructed, "rewrite must be byte-exact");
+
+    match item.item_type {
+        games::palworld::PalDynamicItemType::Weapon {
+            unknown_str,
+            passive_skill_list,
+            ..
+        } => {
+            assert_eq!(Some("None".to_string()), unknown_str);
+            assert!(passive_skill_list.is_empty());
+            Ok(())
+        }
+        other => panic!("expected Weapon, got {other:?}"),
+    }
+}
+
+/// These flags are u32 in the blob, not bool. Coercing them to bool and writing
+/// back `1` silently rewrites any other value -- here a `2` would come back as
+/// a `1`, corrupting the save on a round-trip that changed nothing.
+#[test]
+fn test_palworld_non_boolean_u32_flag_is_preserved() -> Result<()> {
+    // PickupItemOnLevel: two GUIDs (32 bytes) then a single u32, set here to 2.
+    let mut payload = vec![0u8; 32];
+    payload.extend_from_slice(&2u32.to_le_bytes());
+
+    let pickup = match parse_concrete_model(&payload, "PickupItem_Flint")? {
+        games::palworld::PalMapConcreteModelVariant::PickupItemOnLevel(pickup) => pickup,
+        other => panic!("expected PickupItemOnLevel, got {other:?}"),
+    };
+
+    assert_eq!(2, pickup.auto_picked_up);
+    Ok(())
+}
+
+/// Parses a `WorkSaveData` RawData payload for `work_type`, asserting full
+/// consumption and a byte-exact rewrite.
+fn parse_work(payload: &[u8], work_type: &str) -> Result<games::palworld::PalWork> {
+    let len = payload.len() as u64;
+    let parsed = run(Cursor::new(payload.to_vec()), |ar| {
+        let parsed = games::palworld::PalWork::read_with_work_type(ar, work_type)?;
+        assert_eq!(
+            len,
+            ar.stream_position()?,
+            "parser must consume the entire payload"
+        );
+        Ok(parsed)
+    })?;
+
+    let mut reconstructed = vec![];
+    run(Cursor::new(&mut reconstructed), |ar| parsed.write(ar))?;
+    assert_eq!(payload, reconstructed, "rewrite must be byte-exact");
+
+    Ok(parsed)
+}
+
+/// Parses a `WorkAssignMap` RawData payload for the owning work's `work_type`,
+/// asserting full consumption and a byte-exact rewrite.
+fn parse_work_assign(payload: &[u8], work_type: &str) -> Result<games::palworld::PalWorkAssign> {
+    let len = payload.len() as u64;
+    let parsed = run(Cursor::new(payload.to_vec()), |ar| {
+        let parsed = games::palworld::PalWorkAssign::read_with_work_type(ar, work_type)?;
+        assert_eq!(
+            len,
+            ar.stream_position()?,
+            "parser must consume the entire payload"
+        );
+        Ok(parsed)
+    })?;
+
+    let mut reconstructed = vec![];
+    run(Cursor::new(&mut reconstructed), |ar| parsed.write(ar))?;
+    assert_eq!(payload, reconstructed, "rewrite must be byte-exact");
+
+    Ok(parsed)
+}
+
+const WORK_PROGRESS: &str = "EPalWorkableType::Progress";
+const WORK_PROGRESS_MULTI_TYPE: &str = "EPalWorkableType::Progress_MultiType";
+
+/// The 2026-07 update added `Progress_MultiType` work: a progress work that
+/// tracks progress per work suitability, so its payload carries two extra
+/// arrays after the shared progress fields.
+#[test]
+fn test_palworld_progress_multi_type_work_decodes_per_suitability_progress() -> Result<()> {
+    let payload = unhex(include_str!("tests_fixtures/work_progress_multitype.hex").trim());
+
+    // An AncientBlastFurnace, which can be worked by kindling and by watering.
+    let work = parse_work(&payload, WORK_PROGRESS_MULTI_TYPE)?;
+    let base_data = work.base_data.expect("multi-type work serializes a base");
+    assert_eq!("AncientBlastFurnace_0", base_data.assign_define_data_id);
+
+    let progress_entries = match &work.work_specific_data {
+        games::palworld::PalWorkTypeSpecificData::ProgressMultiType {
+            progress_entries, ..
+        } => progress_entries,
+        other => panic!("expected ProgressMultiType, got {other:?}"),
+    };
+    assert_eq!(2, progress_entries.len());
+    assert_eq!(1, progress_entries[0].work_suitability);
+    assert_eq!(31818.182, progress_entries[0].max_progress);
+    assert_eq!(11, progress_entries[1].work_suitability);
+    assert_eq!(30070.281, progress_entries[1].current_progress);
+    Ok(())
+}
+
+/// Workers assigned to a `Progress_MultiType` work record which suitability they
+/// were assigned to, appending seven bytes to the plain work assign payload.
+#[test]
+fn test_palworld_progress_multi_type_work_assign_records_suitability() -> Result<()> {
+    let payload = unhex(include_str!("tests_fixtures/work_assign_multitype.hex").trim());
+
+    let assign = parse_work_assign(&payload, WORK_PROGRESS_MULTI_TYPE)?;
+    let multi_type = assign
+        .multi_type
+        .expect("multi-type work assign records the assigned suitability");
+    assert_eq!(11, multi_type.assigned_work_suitability);
+    assert_eq!(28, multi_type.assigned_work_type);
+    assert_eq!(42, multi_type.assigned_work_action_type);
+    Ok(())
+}
+
+/// A work assign for any other work type stops at the trailing bytes.
+#[test]
+fn test_palworld_plain_work_assign_has_no_suitability() -> Result<()> {
+    let payload = unhex(include_str!("tests_fixtures/work_assign.hex").trim());
+
+    let assign = parse_work_assign(&payload, WORK_PROGRESS)?;
+    assert!(assign.multi_type.is_none());
+    Ok(())
+}
+
+/// Work types that predate the update must keep parsing and rewriting exactly.
+#[test]
+fn test_palworld_work_types_round_trip() -> Result<()> {
+    let cases = [
+        (
+            include_str!("tests_fixtures/work_progress.hex"),
+            WORK_PROGRESS,
+        ),
+        (
+            include_str!("tests_fixtures/work_monster_farm.hex"),
+            "EPalWorkableType::MonsterFarm",
+        ),
+        (
+            include_str!("tests_fixtures/work_only_join.hex"),
+            "EPalWorkableType::OnlyJoin",
+        ),
+        (
+            include_str!("tests_fixtures/work_repair.hex"),
+            "EPalWorkableType::Repair",
+        ),
+    ];
+
+    for (payload, work_type) in cases {
+        let work = parse_work(&unhex(payload.trim()), work_type)?;
+        assert!(work.base_data.is_some(), "{work_type} serializes a base");
+    }
+    Ok(())
+}
+
+/// An unhandled work type keeps its bytes rather than losing them.
+#[test]
+fn test_palworld_unknown_work_type_falls_back_to_raw_bytes() -> Result<()> {
+    let payload = vec![1u8, 2, 3, 4, 5];
+
+    let work = parse_work(&payload, "EPalWorkableType::CollectItem")?;
+    match &work.work_specific_data {
+        games::palworld::PalWorkTypeSpecificData::Unknown { data } => {
+            assert_eq!(&payload, data);
+        }
+        other => panic!("expected Unknown, got {other:?}"),
+    }
+    Ok(())
+}

@@ -34,14 +34,25 @@ pub use types::*;
 pub use work::*;
 
 use crate::{
-    ByteArray, Property, PropertyKey, PropertyTagDataPartial, PropertyTagPartial, Result,
-    SaveGameArchive, StructType, StructValue, Types, ValueVec,
+    ArchiveReader, ByteArray, Property, PropertyKey, PropertyTagDataPartial, PropertyTagPartial,
+    Result, SaveGameArchive, StructType, StructValue, Types, ValueVec,
 };
 use std::io::{Cursor, Read, Seek, Write};
 
 /// Path of the map object save data which needs context-dependent parsing of
 /// the embedded data of its elements.
 const MAP_OBJECT_SAVE_DATA_PATH: &str = "worldSaveData.MapObjectSaveData";
+
+const GROUP_SAVE_DATA_PATH: &str = "worldSaveData.GroupSaveDataMap";
+
+const WORK_SAVE_DATA_PATH: &str = "worldSaveData.WorkSaveData";
+
+pub(crate) fn bytes_remaining<A: ArchiveReader>(ar: &mut A) -> Result<u64> {
+    let position = ar.stream_position()?;
+    let end = ar.seek(std::io::SeekFrom::End(0))?;
+    ar.seek(std::io::SeekFrom::Start(position))?;
+    Ok(end - position)
+}
 
 pub(crate) fn is_pal_struct_type(t: &StructType) -> bool {
     matches!(
@@ -58,6 +69,7 @@ pub(crate) fn is_pal_struct_type(t: &StructType) -> bool {
             | StructType::PalConnector
             | StructType::PalBaseCamp
             | StructType::PalWork
+            | StructType::PalWorkAssign
             | StructType::PalMapModel
             | StructType::PalMapConcreteModel
             | StructType::PalMapConcreteModelModule
@@ -109,14 +121,16 @@ pub fn palworld_types() -> Types {
         "worldSaveData.FoliageGridSaveDataMap.ModelMap.InstanceDataMap.RawData",
         "worldSaveData.BaseCampSaveData.WorkerDirector.RawData",
         "worldSaveData.BaseCampSaveData.WorkCollection.RawData",
-        // Marker enabling the context-dependent parsing of MapObjectSaveData elements
         MAP_OBJECT_SAVE_DATA_PATH,
+        GROUP_SAVE_DATA_PATH,
+        WORK_SAVE_DATA_PATH,
     ];
     for path in struct_hints {
         types.add(path.to_string(), StructType::Struct(None));
     }
 
     let guid_hints = [
+        "worldSaveData.InvaderDeclarationSaveData.ValidatedStartPointIds",
         "worldSaveData.MapObjectSpawnerInStageSaveData.Value.SpawnerDataMapByLevelObjectInstanceId.Key",
         "worldSaveData.BaseCampSaveData.Key",
         "worldSaveData.GroupSaveDataMap.Key",
@@ -131,12 +145,11 @@ pub fn palworld_types() -> Types {
         types.add(path.to_string(), StructType::Guid);
     }
 
-    // Embedded (RawData) properties parsed into typed Palworld structs
+    // Embedded (RawData) properties parsed into typed Palworld structs.
+    // GroupSaveDataMap and WorkSaveData are absent on purpose: their RawData
+    // needs a sibling property (GroupType / WorkableType) to be parsed, so they
+    // go through context-dependent parsing.
     let pal_hints = [
-        (
-            "worldSaveData.GroupSaveDataMap.RawData",
-            StructType::PalGroupData,
-        ),
         (
             "worldSaveData.CharacterSaveParameterMap.RawData",
             StructType::PalCharacterData,
@@ -161,7 +174,6 @@ pub fn palworld_types() -> Types {
             "worldSaveData.BaseCampSaveData.RawData",
             StructType::PalBaseCamp,
         ),
-        ("worldSaveData.WorkSaveData", StructType::PalWork),
         (
             "worldSaveData.GuildExtraSaveDataMap.GuildItemStorage.RawData",
             StructType::PalGuildItemStorage,
@@ -208,6 +220,58 @@ pub(crate) fn process_property_for_read<R: Read + Seek>(
                             other
                         )))
                     }
+                }
+            }
+            return Ok(Property::Array(ValueVec::Struct(values)));
+        }
+        return Ok(value);
+    }
+
+    // Group RawData depends on the sibling GroupType property: the blob itself
+    // carries no marker of which group schema it follows.
+    if ar.scope.path() == GROUP_SAVE_DATA_PATH {
+        if let Property::Map(mut entries) = value {
+            for entry in entries.iter_mut() {
+                let Property::Struct(StructValue::Struct(group_properties)) = &mut entry.value
+                else {
+                    continue;
+                };
+                let group_type = match group_properties.0.get(&PropertyKey::from("GroupType")) {
+                    Some(Property::Enum(t)) | Some(Property::Str(t)) | Some(Property::Name(t)) => {
+                        t.clone()
+                    }
+                    _ => continue,
+                };
+                if let Some(raw_data_prop) =
+                    group_properties.0.get_mut(&PropertyKey::from("RawData"))
+                {
+                    map_object::convert_embedded(
+                        ar,
+                        raw_data_prop,
+                        // Map entries do not push Key/Value scope segments, so
+                        // value properties live directly under the map path
+                        &["RawData"],
+                        StructType::PalGroupData,
+                        move |nested| {
+                            Ok(StructValue::PalGroupData(
+                                groups::PalGroupData::read_with_group_type(nested, &group_type)?,
+                            ))
+                        },
+                    )?;
+                }
+            }
+            return Ok(Property::Map(entries));
+        }
+        return Ok(value);
+    }
+
+    // Work RawData depends on the sibling WorkableType property, which also
+    // decides the tail of each of the work's assignment records.
+    if ar.scope.path() == WORK_SAVE_DATA_PATH {
+        if let Property::Array(ValueVec::Struct(mut values)) = value {
+            for struct_value in values.iter_mut() {
+                if let StructValue::Struct(work_properties) = struct_value {
+                    work::parse_work_with_context(ar, work_properties)?;
                 }
             }
             return Ok(Property::Array(ValueVec::Struct(values)));

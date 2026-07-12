@@ -458,6 +458,7 @@ impl<'de, 'a> DeserializeSeed<'de> for StructValueSeed<'a> {
             | StructType::PalConnector
             | StructType::PalBaseCamp
             | StructType::PalWork
+            | StructType::PalWorkAssign
             | StructType::PalMapModel
             | StructType::PalMapConcreteModel
             | StructType::PalMapConcreteModelModule => PalStructValueSeed {
@@ -1031,6 +1032,9 @@ impl<'de> DeserializeSeed<'de> for PalStructValueSeed<'_> {
             StructType::PalWork => Ok(StructValue::PalWork(
                 palworld::PalWork::deserialize(deserializer)?.into(),
             )),
+            StructType::PalWorkAssign => Ok(StructValue::PalWorkAssign(
+                palworld::PalWorkAssign::deserialize(deserializer)?,
+            )),
             StructType::PalMapModel => Ok(StructValue::PalMapModel(
                 palworld::PalMapModel::deserialize(deserializer)?.into(),
             )),
@@ -1153,6 +1157,7 @@ impl<'de> Visitor<'de> for PalDynamicItemTypeSeed<'_> {
             durability: f32,
             remaining_bullets: i32,
             passive_skill_list: Vec<String>,
+            unknown_str: Option<String>,
             trailing_bytes: [u8; 4],
         }
 
@@ -1185,6 +1190,7 @@ impl<'de> Visitor<'de> for PalDynamicItemTypeSeed<'_> {
                     durability: content.durability,
                     remaining_bullets: content.remaining_bullets,
                     passive_skill_list: content.passive_skill_list,
+                    unknown_str: content.unknown_str,
                     trailing_bytes: content.trailing_bytes,
                 }
             }
@@ -1391,6 +1397,7 @@ impl<'de> Visitor<'de> for PalMapConcreteModelVariantSeed<'_> {
             "TreasureBox" => V::TreasureBox(map.next_value()?),
             "BreedFarm" => V::BreedFarm(map.next_value()?),
             "Signboard" => V::Signboard(map.next_value()?),
+            "Lamp" => V::Lamp(map.next_value()?),
             "Torch" => V::Torch(map.next_value()?),
             "PalEgg" => V::PalEgg(map.next_value()?),
             "BaseCampPoint" => V::BaseCampPoint(map.next_value()?),

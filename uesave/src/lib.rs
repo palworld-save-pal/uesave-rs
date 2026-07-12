@@ -1387,6 +1387,7 @@ define_struct_types! {
     ("/Script/Pal", PalConnector),
     ("/Script/Pal", PalBaseCamp),
     ("/Script/Pal", PalWork),
+    ("/Script/Pal", PalWorkAssign),
     ("/Script/Pal", PalMapModel),
     ("/Script/Pal", PalMapConcreteModel),
     ("/Script/Pal", PalMapConcreteModelModule),
@@ -3986,6 +3987,7 @@ pub enum StructValue<T: ArchiveType = SaveGameArchiveType> {
     PalConnector(games::palworld::PalConnector),
     PalBaseCamp(std::boxed::Box<games::palworld::PalBaseCamp>),
     PalWork(std::boxed::Box<games::palworld::PalWork>),
+    PalWorkAssign(games::palworld::PalWorkAssign),
     PalMapModel(std::boxed::Box<games::palworld::PalMapModel>),
     PalMapConcreteModel(std::boxed::Box<games::palworld::PalMapConcreteModel<T>>),
     PalMapConcreteModelModule(games::palworld::PalMapConcreteModelModule),
@@ -4159,6 +4161,9 @@ impl<T: ArchiveType> StructValue<T> {
                 StructValue::PalBaseCamp(games::palworld::PalBaseCamp::read(ar)?.into())
             }
             StructType::PalWork => StructValue::PalWork(games::palworld::PalWork::read(ar)?.into()),
+            StructType::PalWorkAssign => StructValue::PalWorkAssign(
+                games::palworld::PalWorkAssign::read_with_work_type(ar, "Unknown")?,
+            ),
             StructType::PalMapModel => {
                 StructValue::PalMapModel(games::palworld::PalMapModel::read(ar)?.into())
             }
@@ -4229,6 +4234,7 @@ impl<T: ArchiveType> StructValue<T> {
             StructValue::PalConnector(v) => v.write(ar)?,
             StructValue::PalBaseCamp(v) => v.write(ar)?,
             StructValue::PalWork(v) => v.write(ar)?,
+            StructValue::PalWorkAssign(v) => v.write(ar)?,
             StructValue::PalMapModel(v) => v.write(ar)?,
             StructValue::PalMapConcreteModel(v) => v.write(ar)?,
             StructValue::PalMapConcreteModelModule(v) => v.write(ar)?,
