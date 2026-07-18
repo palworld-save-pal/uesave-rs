@@ -31,6 +31,7 @@ mod archive;
 pub mod compression;
 mod context;
 mod error;
+mod game;
 pub mod games;
 mod serialization;
 
@@ -40,6 +41,7 @@ mod tests;
 pub use archive::{ArchiveReader, ArchiveType, ArchiveWriter, SaveGameArchiveType};
 pub use context::{PropertySchemas, SaveGameArchive, Scope, Types};
 pub use error::{Error, ParseError};
+pub use game::{Game, GameStruct, NoGame};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use std::{

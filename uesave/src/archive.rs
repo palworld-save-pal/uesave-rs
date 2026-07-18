@@ -30,6 +30,10 @@ pub trait ArchiveType: Clone + PartialEq + std::fmt::Debug + Default + serde::Se
         + std::fmt::Debug
         + serde::Serialize
         + for<'de> serde::Deserialize<'de>;
+
+    /// The game this archive type is bound to. Determines which game-specific
+    /// struct types and read/write hooks are used.
+    type Game: crate::game::Game;
 }
 
 pub trait ArchiveReader: Read + Seek {
@@ -149,11 +153,15 @@ pub trait ArchiveWriter: Write + Seek {
 
 /// Archive type for save games, which use string-based object references
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize)]
-pub struct SaveGameArchiveType;
+#[serde(bound = "")]
+pub struct SaveGameArchiveType<G: crate::game::Game = crate::game::NoGame>(
+    std::marker::PhantomData<G>,
+);
 
-impl ArchiveType for SaveGameArchiveType {
+impl<G: crate::game::Game> ArchiveType for SaveGameArchiveType<G> {
     type ObjectRef = String;
     type SoftObjectPath = crate::SoftObjectPath;
+    type Game = G;
 
     fn is_null_object_ref(object_ref: &Self::ObjectRef) -> bool {
         object_ref.is_empty() || object_ref == "None"
