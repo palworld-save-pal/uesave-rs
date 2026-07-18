@@ -1520,3 +1520,58 @@ fn test_palworld_struct_value_game_dispatch() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_registry_contains_none_game() {
+    let reg = games::registry::registry();
+    assert!(
+        reg.iter().any(|h| h.name() == "none"),
+        "registry must contain the default game"
+    );
+    assert!(games::registry::get("none").is_some());
+    assert!(games::registry::get("definitely-not-a-game").is_none());
+}
+
+#[test]
+fn test_nogame_facade_json_roundtrip() -> Result<()> {
+    // A plain GVAS save round-trips bytes -> JSON -> bytes through the facade.
+    let mut schemas = PropertySchemas::new();
+    schemas.record(
+        "Level".to_string(),
+        PropertyTagPartial {
+            id: None,
+            data: PropertyTagDataPartial::Other(PropertyType::IntProperty),
+        },
+    );
+    let s0: Save<NoGame> = Save {
+        header: mock_header(),
+        schemas,
+        root: Root {
+            save_game_type: "TestSave".to_string(),
+            properties: Properties(indexmap::IndexMap::from([(
+                PropertyKey::from("Level"),
+                Property::Int(7),
+            )])),
+        },
+        extra: vec![],
+    };
+    let mut bytes = vec![];
+    s0.write(&mut bytes)?;
+
+    let handler = games::registry::get("none").expect("none game");
+    assert!(
+        handler.formats().is_empty(),
+        "plain GVAS has no container formats"
+    );
+
+    let mut json = vec![];
+    handler.to_json(&mut Cursor::new(&bytes), &mut json, Types::new(), false)?;
+
+    let mut out = vec![];
+    handler.from_json(&mut Cursor::new(&json), &mut out, None)?;
+    assert_eq!(
+        bytes, out,
+        "facade JSON round trip must rewrite byte-for-byte"
+    );
+    Ok(())
+}
