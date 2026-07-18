@@ -4,8 +4,8 @@ use std::io::{stdin, stdout, BufRead, BufReader, BufWriter, Cursor, Write};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 
-use uesave::games::palworld::{palworld_types, Palworld};
-use uesave::{Game, NoGame, Save, SaveReader, StructType, Types};
+use uesave::games::{registry, GameCli};
+use uesave::{StructType, Types};
 
 #[derive(Parser, Debug)]
 struct ActionToJson {
@@ -30,9 +30,9 @@ struct ActionToJson {
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
 
-    /// Enable Palworld custom property support
-    #[arg(long)]
-    palworld: bool,
+    /// Game whose save format to use (see `--game list` for names)
+    #[arg(long, default_value = "none")]
+    game: String,
 }
 
 #[derive(Parser, Debug)]
@@ -43,13 +43,13 @@ struct ActionFromJson {
     #[arg(short, long, default_value = "-")]
     output: String,
 
-    /// Enable Palworld custom property support (deserialize typed Pal structs)
-    #[arg(long)]
-    palworld: bool,
+    /// Game whose save format to use (see `--game list` for names)
+    #[arg(long, default_value = "none")]
+    game: String,
 
-    /// Compress the output with Oodle (Palworld PLM format)
+    /// Output container format for this game (default: uncompressed)
     #[arg(long)]
-    compress_oodle: bool,
+    format: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -72,13 +72,13 @@ struct ActionEdit {
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
 
-    /// Enable Palworld custom property support
-    #[arg(long)]
-    palworld: bool,
+    /// Game whose save format to use (see `--game list` for names)
+    #[arg(long, default_value = "none")]
+    game: String,
 
-    /// Compress the modified save with Oodle (Palworld PLM format)
+    /// Output container format for this game (default: uncompressed)
     #[arg(long)]
-    compress_oodle: bool,
+    format: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -110,9 +110,9 @@ struct ActionTestResave {
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
 
-    /// Enable Palworld custom property support
-    #[arg(long)]
-    palworld: bool,
+    /// Game whose save format to use (see `--game list` for names)
+    #[arg(long, default_value = "none")]
+    game: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -142,128 +142,139 @@ fn parse_type(t: &str) -> Result<(String, StructType)> {
     }
 }
 
-pub fn main() -> Result<()> {
-    let args = Args::parse();
-
-    match args.action {
-        Action::ToJson(mut action) => {
-            let types = build_types(action.palworld, std::mem::take(&mut action.r#type));
-            if action.palworld {
-                run_to_json::<Palworld>(action, types)?;
-            } else {
-                run_to_json::<NoGame>(action, types)?;
-            }
-        }
-        Action::FromJson(io) => {
-            if io.compress_oodle && !io.palworld {
-                return Err(anyhow!("--compress-oodle requires --palworld"));
-            }
-            if io.compress_oodle {
-                // Oodle's PLM container is Palworld-specific, so this path needs
-                // a concretely-typed `Save<Palworld>` (`write_plm` is not part of
-                // the generic `Game` trait).
-                run_from_json_oodle(io)?;
-            } else if io.palworld {
-                run_from_json::<Palworld>(io)?;
-            } else {
-                run_from_json::<NoGame>(io)?;
-            }
-        }
-        Action::TestResave(mut action) => {
-            let types = build_types(action.palworld, std::mem::take(&mut action.r#type));
-            if action.palworld {
-                run_test_resave::<Palworld>(action, types)?;
-            } else {
-                run_test_resave::<NoGame>(action, types)?;
-            }
-        }
-        Action::Edit(mut action) => {
-            if action.compress_oodle && !action.palworld {
-                return Err(anyhow!("--compress-oodle requires --palworld"));
-            }
-            let types = build_types(action.palworld, std::mem::take(&mut action.r#type));
-            if action.palworld {
-                if let Some(modified_save) = run_edit::<Palworld>(&action, types)? {
-                    let mut writer = open_for_write(&action.path)?;
-                    if action.compress_oodle {
-                        modified_save.write_plm(&mut writer)?;
-                    } else {
-                        modified_save.write(&mut writer)?;
-                    }
-                }
-            } else if let Some(modified_save) = run_edit::<NoGame>(&action, types)? {
-                let mut writer = open_for_write(&action.path)?;
-                modified_save.write(&mut writer)?;
-            }
-        }
-    }
-    Ok(())
+fn pick<'a>(reg: &'a [Box<dyn GameCli>], name: &str) -> Result<&'a dyn GameCli> {
+    reg.iter()
+        .map(|h| h.as_ref())
+        .find(|h| h.name() == name)
+        .ok_or_else(|| {
+            let names: Vec<_> = reg.iter().map(|h| h.name()).collect();
+            anyhow!("unknown game {name:?}; available: {}", names.join(", "))
+        })
 }
 
-/// Build the [`Types`] spec: the Palworld defaults when `palworld` is set, plus
-/// any user-supplied `-t path=Type` overrides.
-fn build_types(palworld: bool, overrides: Vec<(String, StructType)>) -> Types {
-    let mut types = if palworld {
-        palworld_types()
+fn check_format(handler: &dyn GameCli, format: Option<&str>) -> Result<()> {
+    let Some(f) = format else { return Ok(()) };
+    if handler.formats().contains(&f) {
+        return Ok(());
+    }
+    let available = if handler.formats().is_empty() {
+        "(none)".to_string()
     } else {
-        Types::new()
+        handler.formats().join(", ")
     };
+    Err(anyhow!(
+        "unknown format {f:?} for game {}; available: {available}",
+        handler.name()
+    ))
+}
+
+/// Game defaults plus any user `-t path=Type` overrides.
+fn merge_types(mut types: Types, overrides: Vec<(String, StructType)>) -> Types {
     for (path, t) in overrides {
         types.add(path, t);
     }
     types
 }
 
-fn run_to_json<G: Game>(action: ActionToJson, types: Types) -> Result<()> {
-    let save: Save<G> = SaveReader::new()
-        .game::<G>()
-        .log(!action.no_warn)
-        .error_to_raw(true)
-        .types(types)
-        .read(input(&action.input)?)?;
-    serde_json::to_writer_pretty(output(&action.output)?, &save)?;
-    Ok(())
-}
+pub fn main() -> Result<()> {
+    let args = Args::parse();
 
-fn run_from_json<G: Game>(io: ActionFromJson) -> Result<()> {
-    let save: Save<G> = serde_json::from_reader(&mut input(&io.input)?)?;
-    save.write(&mut output(&io.output)?)?;
-    Ok(())
-}
+    let reg = registry();
+    match args.action {
+        Action::ToJson(mut action) => {
+            let handler = pick(&reg, &action.game)?;
+            let types = merge_types(handler.default_types(), std::mem::take(&mut action.r#type));
+            handler.to_json(
+                &mut input(&action.input)?,
+                &mut output(&action.output)?,
+                types,
+                !action.no_warn,
+            )?;
+        }
+        Action::FromJson(action) => {
+            let handler = pick(&reg, &action.game)?;
+            check_format(handler, action.format.as_deref())?;
+            handler.from_json(
+                &mut input(&action.input)?,
+                &mut output(&action.output)?,
+                action.format.as_deref(),
+            )?;
+        }
+        Action::Edit(mut action) => {
+            let handler = pick(&reg, &action.game)?;
+            check_format(handler, action.format.as_deref())?;
+            let types = merge_types(handler.default_types(), std::mem::take(&mut action.r#type));
 
-/// `FromJson` with `--compress-oodle`: writes Palworld's Oodle-compressed PLM
-/// container. Kept separate from [`run_from_json`] (rather than generic over
-/// `G`) because `write_plm` is a `Save<Palworld>`-specific helper, not part of
-/// the generic `Game` trait.
-fn run_from_json_oodle(io: ActionFromJson) -> Result<()> {
-    let save: Save<Palworld> = serde_json::from_reader(&mut input(&io.input)?)?;
-    save.write_plm(&mut output(&io.output)?)?;
-    Ok(())
-}
+            let bytes = fs::read(&action.path)?;
+            let mut json = vec![];
+            handler.to_json(&mut Cursor::new(&bytes), &mut json, types, !action.no_warn)?;
 
-/// Reads, edits, and returns the modified save if it changed (`None` if the
-/// edit left the file unchanged). Writing is left to the caller since the
-/// write step differs by game (e.g. Palworld's `--compress-oodle`), which
-/// this function, generic over `G`, cannot express.
-fn run_edit<G: Game>(action: &ActionEdit, types: Types) -> Result<Option<Save<G>>> {
-    let save: Save<G> = SaveReader::new()
-        .game::<G>()
-        .log(!action.no_warn)
-        .error_to_raw(true)
-        .types(types)
-        .read(Cursor::new(fs::read(&action.path)?))?;
-    let modified_save: Save<G> = serde_json::from_slice(&edit::edit_bytes_with_builder(
-        serde_json::to_vec_pretty(&save)?,
-        tempfile::Builder::new().suffix(".json"),
-    )?)?;
+            let edited = edit::edit_bytes_with_builder(
+                json.clone(),
+                tempfile::Builder::new().suffix(".json"),
+            )?;
 
-    if save == modified_save {
-        println!("File unchanged, doing nothing.");
-        Ok(None)
-    } else {
-        println!("File modified, writing new save.");
-        Ok(Some(modified_save))
+            if edited == json {
+                println!("File unchanged, doing nothing.");
+            } else {
+                println!("File modified, writing new save.");
+                let mut writer = open_for_write(&action.path)?;
+                handler.from_json(
+                    &mut Cursor::new(&edited),
+                    &mut writer,
+                    action.format.as_deref(),
+                )?;
+            }
+        }
+        Action::TestResave(mut action) => {
+            let handler = pick(&reg, &action.game)?;
+            let mut types =
+                merge_types(handler.default_types(), std::mem::take(&mut action.r#type));
+
+            let path = std::path::Path::new(&action.path);
+            if let Ok(types_file) = fs::read_to_string(path.with_extension("types")) {
+                for t in types_file.lines() {
+                    if let Ok((p, ty)) = parse_type(t) {
+                        types.add(p, ty);
+                    }
+                }
+            }
+
+            let bytes = fs::read(path)?;
+            let want_debug = action.debug;
+            if want_debug {
+                fs::write("input.sav", &bytes)?;
+            }
+            let mut debug = |name: &str, data: &[u8]| {
+                if want_debug {
+                    let _ = fs::write(name, data);
+                }
+            };
+
+            let log = !action.no_warn;
+            #[cfg(feature = "tracing")]
+            {
+                if action.trace {
+                    ser_hex::read("trace.json", &mut Cursor::new(&bytes), |r| {
+                        handler.test_resave(r, &bytes, types, log, &mut debug)
+                    })?;
+                } else {
+                    handler.test_resave(
+                        &mut Cursor::new(&bytes),
+                        &bytes,
+                        types,
+                        log,
+                        &mut debug,
+                    )?;
+                }
+            }
+            #[cfg(not(feature = "tracing"))]
+            handler.test_resave(&mut Cursor::new(&bytes), &bytes, types, log, &mut debug)?;
+
+            println!("Resave successful");
+        }
     }
+    Ok(())
 }
 
 fn open_for_write(path: &str) -> Result<BufWriter<File>> {
@@ -274,66 +285,6 @@ fn open_for_write(path: &str) -> Result<BufWriter<File>> {
             .write(true)
             .open(path)?,
     ))
-}
-
-fn run_test_resave<G: Game>(action: ActionTestResave, mut types: Types) -> Result<()> {
-    let path = std::path::Path::new(&action.path);
-
-    if let Ok(types_file) = fs::read_to_string(path.with_extension("types")) {
-        for t in types_file.lines() {
-            if let Ok((path, t)) = parse_type(t) {
-                types.add(path, t);
-            }
-        }
-    }
-
-    let write_debug = |name: &str, data: &[u8]| -> Result<()> {
-        if action.debug {
-            fs::write(name, data)?;
-        }
-        Ok(())
-    };
-
-    let input = fs::read(path)?;
-    write_debug("input.sav", &input)?;
-
-    let sr = SaveReader::new()
-        .game::<G>()
-        .log(!action.no_warn)
-        .error_to_raw(true)
-        .types(types);
-    let mut reader = Cursor::new(&input);
-    #[cfg(feature = "tracing")]
-    let save: Save<G> = if action.trace {
-        ser_hex::read("trace.json", &mut reader, |r| sr.read(r))?
-    } else {
-        sr.read(&mut reader)?
-    };
-    #[cfg(not(feature = "tracing"))]
-    let save: Save<G> = sr.read(&mut reader)?;
-
-    let mut output = vec![];
-    save.write(&mut output)?;
-    write_debug("output.sav", &output)?;
-    if input != output {
-        return Err(anyhow!("Resave did not match"));
-    }
-
-    let input_json = serde_json::to_vec_pretty(&save)?;
-    write_debug("input.json", &input_json)?;
-
-    let save_from_json: Save<G> = serde_json::from_slice(&input_json)?;
-    let output_json = serde_json::to_vec_pretty(&save_from_json)?;
-    write_debug("output.json", &output_json)?;
-
-    let mut output = vec![];
-    save_from_json.write(&mut output)?;
-    write_debug("output.sav", &output)?;
-    if input != output {
-        return Err(anyhow!("JSON round trip did not match"));
-    }
-    println!("Resave successful");
-    Ok(())
 }
 
 fn input<'a>(path: &str) -> Result<Box<dyn BufRead + 'a>> {
