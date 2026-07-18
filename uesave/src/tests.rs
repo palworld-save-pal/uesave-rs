@@ -1521,6 +1521,7 @@ fn test_palworld_struct_value_game_dispatch() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn test_registry_contains_none_game() {
     let reg = games::registry::registry();
@@ -1532,6 +1533,7 @@ fn test_registry_contains_none_game() {
     assert!(games::registry::get("definitely-not-a-game").is_none());
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn test_nogame_facade_json_roundtrip() -> Result<()> {
     // A plain GVAS save round-trips bytes -> JSON -> bytes through the facade.
