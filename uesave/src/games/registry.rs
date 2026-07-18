@@ -179,7 +179,10 @@ impl GameInfo for NoGame {
 /// Games built into this crate. Callers may extend the returned vector with
 /// [`handle`] to plug in games defined elsewhere.
 pub fn registry() -> Vec<Box<dyn GameCli>> {
-    vec![handle::<NoGame>()]
+    vec![
+        handle::<NoGame>(),
+        handle::<crate::games::palworld::Palworld>(),
+    ]
 }
 
 /// Look up a built-in game by [`GameInfo::NAME`].

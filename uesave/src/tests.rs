@@ -1577,3 +1577,64 @@ fn test_nogame_facade_json_roundtrip() -> Result<()> {
     );
     Ok(())
 }
+
+#[cfg(feature = "cli")]
+#[test]
+fn test_registry_contains_palworld_with_formats() {
+    let handler = games::registry::get("palworld").expect("palworld game");
+    assert!(
+        handler.formats().contains(&"zlib"),
+        "palworld must expose the zlib (PLZ) format"
+    );
+    #[cfg(feature = "oodle")]
+    assert!(
+        handler.formats().contains(&"oodle"),
+        "palworld must expose the oodle (PLM) format"
+    );
+    assert_eq!(handler.name(), "palworld");
+}
+
+#[cfg(feature = "cli")]
+#[test]
+fn test_palworld_facade_json_roundtrip() -> Result<()> {
+    use games::palworld::Palworld;
+
+    // A Palworld save whose RawData parses into a typed game struct.
+    let char_blob = unhex("050000004e6f6e650001020304000102030405060708090a0b0c0d0e0f0a0b0c0d");
+    let byte_tag = PropertyTagPartial {
+        id: None,
+        data: PropertyTagDataPartial::Array(std::boxed::Box::new(PropertyTagDataPartial::Byte(
+            None,
+        ))),
+    };
+    let mut schemas = PropertySchemas::new();
+    schemas.record("Char".to_string(), byte_tag);
+    let s0: Save<Palworld> = Save {
+        header: mock_header(),
+        schemas,
+        root: Root {
+            save_game_type: "TestSave".to_string(),
+            properties: Properties(indexmap::IndexMap::from([(
+                PropertyKey::from("Char"),
+                Property::Array(ValueVec::Byte(ByteArray::Byte(char_blob))),
+            )])),
+        },
+        extra: vec![],
+    };
+    let mut bytes = vec![];
+    s0.write(&mut bytes)?;
+
+    let handler = games::registry::get("palworld").expect("palworld game");
+    let types = handler.default_types();
+
+    let mut json = vec![];
+    handler.to_json(&mut Cursor::new(&bytes), &mut json, types, false)?;
+
+    let mut out = vec![];
+    handler.from_json(&mut Cursor::new(&json), &mut out, None)?;
+    assert_eq!(
+        bytes, out,
+        "palworld facade round trip must rewrite byte-for-byte"
+    );
+    Ok(())
+}

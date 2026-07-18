@@ -383,6 +383,38 @@ impl Save<Palworld> {
     }
 }
 
+#[cfg(feature = "cli")]
+impl crate::games::registry::GameInfo for Palworld {
+    const NAME: &'static str = "palworld";
+
+    fn default_types() -> Types {
+        palworld_types()
+    }
+
+    fn formats() -> &'static [&'static str] {
+        #[cfg(feature = "oodle")]
+        {
+            &["oodle", "zlib"]
+        }
+        #[cfg(not(feature = "oodle"))]
+        {
+            &["zlib"]
+        }
+    }
+
+    fn write_format(save: &Save<Self>, name: Option<&str>, w: &mut dyn Write) -> Result<()> {
+        let mut w = w;
+        match name {
+            None => save.write(&mut w),
+            Some("zlib") => save.write_plz(&mut w),
+            Some("oodle") => save.write_plm(&mut w),
+            Some(other) => Err(crate::Error::Other(format!(
+                "unknown format {other:?} for game palworld"
+            ))),
+        }
+    }
+}
+
 pub(crate) fn bytes_remaining<A: ArchiveReader>(ar: &mut A) -> Result<u64> {
     let position = ar.stream_position()?;
     let end = ar.seek(std::io::SeekFrom::End(0))?;
