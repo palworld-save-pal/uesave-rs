@@ -270,9 +270,8 @@ pub fn compress_save(data: &[u8], format: CompressionFormat) -> Result<Vec<u8>> 
 mod tests {
     use super::*;
 
-    const CNK_SAVE: &str = "D:/project/unreal-palworld-save-tools/palworld-save-pal/backups/gamepass/000900000487F3B6_0000000000000000000000006B210A9C_20260325231642/CC9746994B05F767129BC48B346B691D/Level.sav";
-
-    // Pin the header offsets so the CNK-inversion fix cannot regress.
+    // A CNK save is keyed on the outer magic but must report the inner header;
+    // pin the offsets so that inversion cannot regress.
     #[test]
     fn header_parse_cnk_reads_inner() {
         let mut buf = Vec::new();
@@ -334,11 +333,10 @@ mod tests {
 
     #[test]
     fn cnk_decompress_real_corpus() {
-        let path = std::path::Path::new(CNK_SAVE);
-        if !path.exists() {
-            eprintln!("skipping cnk_decompress_real_corpus: corpus not present");
+        let Some(path) = std::env::var_os("UESAVE_CNK_SAVE") else {
+            eprintln!("skipping cnk_decompress_real_corpus: set UESAVE_CNK_SAVE to a CNK save");
             return;
-        }
+        };
         let bytes = std::fs::read(path).unwrap();
 
         // Confirm it really is a CNK file with an inner PlZ header.

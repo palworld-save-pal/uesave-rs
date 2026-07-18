@@ -9,6 +9,7 @@
 pub mod base_camp;
 pub mod build_process;
 pub mod character;
+pub mod compression;
 pub mod connector;
 pub mod groups;
 pub mod guild;
@@ -24,6 +25,7 @@ pub mod work;
 pub use base_camp::*;
 pub use build_process::*;
 pub use character::*;
+pub use compression::{CompressionFormat, MagicBytes};
 pub use connector::*;
 pub use groups::*;
 pub use guild::*;
@@ -38,7 +40,7 @@ pub use work::*;
 use crate::game::Game;
 use crate::{
     ArchiveReader, ByteArray, Property, PropertyKey, PropertyTagDataPartial, PropertyTagPartial,
-    Result, SaveGameArchive, SaveGameArchiveType, StructType, StructValue, Types, ValueVec,
+    Result, Save, SaveGameArchive, SaveGameArchiveType, StructType, StructValue, Types, ValueVec,
 };
 use pal_struct::{bare_name, PAL_STRUCT_TYPES};
 use std::io::{Cursor, Read, Seek, Write};
@@ -342,6 +344,42 @@ impl Game for Palworld {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Decode a Palworld save's container format (PLM/PLZ/CNK, or plain GVAS).
+    fn decompress_save<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
+        compression::decompress_save(reader)
+    }
+
+    /// Encode plain GVAS bytes into Palworld's canonical container: the
+    /// double-zlib PLZ format (matches the reference tooling's default and
+    /// `plz_round_trip`). Callers that need Oodle's PLM format explicitly use
+    /// [`Save::<Palworld>::write_plm`] instead.
+    fn compress_save(data: &[u8]) -> Result<Vec<u8>> {
+        compression::compress_save(data, CompressionFormat::Zlib)
+    }
+}
+
+impl Save<Palworld> {
+    /// Write compressed in Palworld's double-zlib PLZ container. Equivalent to
+    /// [`Save::write_compressed`] for `Palworld`, spelled out for callers that
+    /// want the format explicit regardless of the trait's canonical default.
+    pub fn write_plz<W: Write>(&self, writer: &mut W) -> Result<()> {
+        self.write_container(CompressionFormat::Zlib, writer)
+    }
+
+    /// Write Oodle-compressed in Palworld's PLM container (requires the
+    /// `oodle` feature).
+    pub fn write_plm<W: Write>(&self, writer: &mut W) -> Result<()> {
+        self.write_container(CompressionFormat::Oodle, writer)
+    }
+
+    fn write_container<W: Write>(&self, format: CompressionFormat, writer: &mut W) -> Result<()> {
+        let mut buffer = Vec::new();
+        self.write(&mut buffer)?;
+        let output = compression::compress_save(&buffer, format)?;
+        writer.write_all(&output)?;
+        Ok(())
     }
 }
 

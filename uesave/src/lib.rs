@@ -28,7 +28,6 @@ match save.root.properties["NumberOfGamesPlayed"] {
 */
 
 mod archive;
-pub mod compression;
 mod context;
 mod error;
 mod game;
@@ -5109,17 +5108,15 @@ impl<G: Game> Save<G> {
         writer.write_all(&buffer)?;
         Ok(())
     }
-    /// Writes the save compressed with the given [`compression::CompressionFormat`]
-    /// (e.g. Palworld's Oodle-compressed PLM format).
-    pub fn write_compressed<W: Write>(
-        &self,
-        writer: &mut W,
-        format: compression::CompressionFormat,
-    ) -> Result<()> {
+    /// Writes the save through the game's canonical container format (see
+    /// [`Game::compress_save`]; e.g. Palworld's zlib-compressed PLZ format).
+    /// Games that support multiple container formats may expose additional
+    /// explicit helpers (e.g. `Save::<Palworld>::write_plm` for Oodle).
+    pub fn write_compressed<W: Write>(&self, writer: &mut W) -> Result<()> {
         let mut buffer = Vec::new();
         self.write(&mut buffer)?;
 
-        let output = compression::compress_save(&buffer, format)?;
+        let output = G::compress_save(&buffer)?;
 
         writer.write_all(&output)?;
         Ok(())
@@ -5183,8 +5180,8 @@ impl<G: Game> SaveReader<G> {
         let schemas = Rc::new(RefCell::new(PropertySchemas::new()));
 
         // Transparently decompress compressed save formats (e.g. Palworld PLM/PLZ).
-        // Plain GVAS data is passed through unchanged.
-        let data = compression::decompress_save(&mut stream)
+        // Plain GVAS data is passed through unchanged (the default `Game::decompress_save`).
+        let data = G::decompress_save(&mut stream)
             .map_err(|error| error::ParseError { offset: 0, error })?;
         let stream = SeekReader::new(Cursor::new(data));
         let mut reader: SaveGameArchive<_, G> = SaveGameArchive {

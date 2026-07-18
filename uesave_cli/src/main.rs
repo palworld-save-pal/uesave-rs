@@ -4,7 +4,6 @@ use std::io::{stdin, stdout, BufRead, BufReader, BufWriter, Cursor, Write};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 
-use uesave::compression::CompressionFormat;
 use uesave::games::palworld::{palworld_types, Palworld};
 use uesave::{Game, NoGame, Save, SaveReader, StructType, Types};
 
@@ -156,7 +155,15 @@ pub fn main() -> Result<()> {
             }
         }
         Action::FromJson(io) => {
-            if io.palworld {
+            if io.compress_oodle && !io.palworld {
+                return Err(anyhow!("--compress-oodle requires --palworld"));
+            }
+            if io.compress_oodle {
+                // Oodle's PLM container is Palworld-specific, so this path needs
+                // a concretely-typed `Save<Palworld>` (`write_plm` is not part of
+                // the generic `Game` trait).
+                run_from_json_oodle(io)?;
+            } else if io.palworld {
                 run_from_json::<Palworld>(io)?;
             } else {
                 run_from_json::<NoGame>(io)?;
@@ -171,11 +178,22 @@ pub fn main() -> Result<()> {
             }
         }
         Action::Edit(mut action) => {
+            if action.compress_oodle && !action.palworld {
+                return Err(anyhow!("--compress-oodle requires --palworld"));
+            }
             let types = build_types(action.palworld, std::mem::take(&mut action.r#type));
             if action.palworld {
-                run_edit::<Palworld>(action, types)?;
-            } else {
-                run_edit::<NoGame>(action, types)?;
+                if let Some(modified_save) = run_edit::<Palworld>(&action, types)? {
+                    let mut writer = open_for_write(&action.path)?;
+                    if action.compress_oodle {
+                        modified_save.write_plm(&mut writer)?;
+                    } else {
+                        modified_save.write(&mut writer)?;
+                    }
+                }
+            } else if let Some(modified_save) = run_edit::<NoGame>(&action, types)? {
+                let mut writer = open_for_write(&action.path)?;
+                modified_save.write(&mut writer)?;
             }
         }
     }
@@ -209,15 +227,25 @@ fn run_to_json<G: Game>(action: ActionToJson, types: Types) -> Result<()> {
 
 fn run_from_json<G: Game>(io: ActionFromJson) -> Result<()> {
     let save: Save<G> = serde_json::from_reader(&mut input(&io.input)?)?;
-    if io.compress_oodle {
-        save.write_compressed(&mut output(&io.output)?, CompressionFormat::Oodle)?;
-    } else {
-        save.write(&mut output(&io.output)?)?;
-    }
+    save.write(&mut output(&io.output)?)?;
     Ok(())
 }
 
-fn run_edit<G: Game>(action: ActionEdit, types: Types) -> Result<()> {
+/// `FromJson` with `--compress-oodle`: writes Palworld's Oodle-compressed PLM
+/// container. Kept separate from [`run_from_json`] (rather than generic over
+/// `G`) because `write_plm` is a `Save<Palworld>`-specific helper, not part of
+/// the generic `Game` trait.
+fn run_from_json_oodle(io: ActionFromJson) -> Result<()> {
+    let save: Save<Palworld> = serde_json::from_reader(&mut input(&io.input)?)?;
+    save.write_plm(&mut output(&io.output)?)?;
+    Ok(())
+}
+
+/// Reads, edits, and returns the modified save if it changed (`None` if the
+/// edit left the file unchanged). Writing is left to the caller since the
+/// write step differs by game (e.g. Palworld's `--compress-oodle`), which
+/// this function, generic over `G`, cannot express.
+fn run_edit<G: Game>(action: &ActionEdit, types: Types) -> Result<Option<Save<G>>> {
     let save: Save<G> = SaveReader::new()
         .game::<G>()
         .log(!action.no_warn)
@@ -231,22 +259,21 @@ fn run_edit<G: Game>(action: ActionEdit, types: Types) -> Result<()> {
 
     if save == modified_save {
         println!("File unchanged, doing nothing.");
+        Ok(None)
     } else {
         println!("File modified, writing new save.");
-        let mut writer = BufWriter::new(
-            OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(action.path)?,
-        );
-        if action.compress_oodle {
-            modified_save.write_compressed(&mut writer, CompressionFormat::Oodle)?;
-        } else {
-            modified_save.write(&mut writer)?;
-        }
+        Ok(Some(modified_save))
     }
-    Ok(())
+}
+
+fn open_for_write(path: &str) -> Result<BufWriter<File>> {
+    Ok(BufWriter::new(
+        OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)?,
+    ))
 }
 
 fn run_test_resave<G: Game>(action: ActionTestResave, mut types: Types) -> Result<()> {
