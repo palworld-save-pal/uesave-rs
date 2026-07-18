@@ -1581,6 +1581,15 @@ fn test_nogame_facade_json_roundtrip() -> Result<()> {
 #[cfg(feature = "cli")]
 #[test]
 fn test_registry_contains_palworld_with_formats() {
+    let names: Vec<&str> = games::registry::registry()
+        .iter()
+        .map(|h| h.name())
+        .collect();
+    assert!(
+        names.contains(&"palworld"),
+        "registry must contain palworld, got {names:?}"
+    );
+
     let handler = games::registry::get("palworld").expect("palworld game");
     assert!(
         handler.formats().contains(&"zlib"),
@@ -1591,7 +1600,14 @@ fn test_registry_contains_palworld_with_formats() {
         handler.formats().contains(&"oodle"),
         "palworld must expose the oodle (PLM) format"
     );
-    assert_eq!(handler.name(), "palworld");
+
+    let types = handler.default_types();
+    assert!(
+        types
+            .get("worldSaveData.CharacterSaveParameterMap.Key")
+            .is_some(),
+        "palworld default_types must include the Palworld type hints"
+    );
 }
 
 #[cfg(feature = "cli")]
