@@ -1,6 +1,7 @@
 use super::map_object::convert_embedded;
+use super::pal_struct::PalStruct;
 use super::types::PalInstanceId;
-use crate::game::Game;
+use super::Palworld;
 use crate::{
     read_array, ArchiveReader, ArchiveWriter, Double, FGuid, Properties, Property, PropertyKey,
     Quat, Result, SaveGameArchive, SaveGameArchiveType, StructType, StructValue, Vector,
@@ -177,9 +178,9 @@ pub enum PalWorkTypeSpecificData {
 /// Parses the embedded data of one `WorkSaveData` element: the work itself and
 /// each of its assignment records, both of which are laid out according to the
 /// element's `WorkableType`.
-pub(crate) fn parse_work_with_context<R: Read + Seek, G: Game>(
-    ar: &mut SaveGameArchive<R, G>,
-    properties: &mut Properties<SaveGameArchiveType<G>>,
+pub(crate) fn parse_work_with_context<R: Read + Seek>(
+    ar: &mut SaveGameArchive<R, Palworld>,
+    properties: &mut Properties<SaveGameArchiveType<Palworld>>,
 ) -> Result<()> {
     let work_type = match properties.0.get(&PropertyKey::from("WorkableType")) {
         Some(Property::Enum(t)) | Some(Property::Str(t)) | Some(Property::Name(t)) => t.clone(),
@@ -196,11 +197,11 @@ pub(crate) fn parse_work_with_context<R: Read + Seek, G: Game>(
             ar,
             raw_data_prop,
             &["RawData"],
-            StructType::PalWork,
+            StructType::Game("PalWork".to_owned()),
             move |nested| {
-                Ok(StructValue::PalWork(
+                Ok(StructValue::Game(PalStruct::Work(
                     PalWork::read_with_work_type(nested, &work_type)?.into(),
-                ))
+                )))
             },
         )?;
     }
@@ -224,11 +225,11 @@ pub(crate) fn parse_work_with_context<R: Read + Seek, G: Game>(
             // Map entries do not push Key/Value scope segments, so value
             // properties live directly under the map path
             &["WorkAssignMap", "RawData"],
-            StructType::PalWorkAssign,
+            StructType::Game("PalWorkAssign".to_owned()),
             move |nested| {
-                Ok(StructValue::PalWorkAssign(
+                Ok(StructValue::Game(PalStruct::WorkAssign(
                     PalWorkAssign::read_with_work_type(nested, &work_type)?,
-                ))
+                )))
             },
         )?;
     }

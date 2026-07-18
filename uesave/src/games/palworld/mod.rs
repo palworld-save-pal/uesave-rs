@@ -17,6 +17,7 @@ pub mod map_concrete_model;
 pub mod map_concrete_model_module;
 pub mod map_model;
 pub mod map_object;
+pub mod pal_struct;
 pub mod types;
 pub mod work;
 
@@ -30,6 +31,7 @@ pub use items::*;
 pub use map_concrete_model::*;
 pub use map_concrete_model_module::*;
 pub use map_model::*;
+pub use pal_struct::PalStruct;
 pub use types::*;
 pub use work::*;
 
@@ -38,6 +40,7 @@ use crate::{
     ArchiveReader, ByteArray, Property, PropertyKey, PropertyTagDataPartial, PropertyTagPartial,
     Result, SaveGameArchive, SaveGameArchiveType, StructType, StructValue, Types, ValueVec,
 };
+use pal_struct::{bare_name, PAL_STRUCT_TYPES};
 use std::io::{Cursor, Read, Seek, Write};
 
 /// Path of the map object save data which needs context-dependent parsing of
@@ -48,6 +51,281 @@ const GROUP_SAVE_DATA_PATH: &str = "worldSaveData.GroupSaveDataMap";
 
 const WORK_SAVE_DATA_PATH: &str = "worldSaveData.WorkSaveData";
 
+/// The Palworld game. Wires Palworld's embedded-struct parsing (see the module
+/// docs) into the core archive via the [`Game`] trait.
+#[derive(Default, Clone, PartialEq, Debug, serde::Serialize)]
+pub struct Palworld;
+
+impl Game for Palworld {
+    type Struct<T: crate::ArchiveType> = PalStruct<T>;
+
+    /// Does this type name (bare `PalXxx` or full `/Script/Pal.PalXxx` path)
+    /// name a Palworld struct parsed from bytes?
+    fn is_game_struct_type(full_path: &str) -> bool {
+        let name = bare_name(full_path);
+        PAL_STRUCT_TYPES.iter().any(|(bare, _)| *bare == name)
+    }
+
+    fn read_struct<A: ArchiveReader>(
+        ar: &mut A,
+        name: &str,
+    ) -> Result<Self::Struct<A::ArchiveType>> {
+        Ok(match bare_name(name) {
+            "PalCharacterData" => PalStruct::CharacterData(PalCharacterData::read(ar)?),
+            "PalItemContainer" => PalStruct::ItemContainer(PalItemContainer::read(ar)?),
+            "PalGroupData" => PalStruct::GroupData(PalGroupData::read(ar)?),
+            "PalDynamicItem" => PalStruct::DynamicItem(PalDynamicItem::read(ar)?.into()),
+            "PalBuildProcess" => PalStruct::BuildProcess(PalBuildProcess::read(ar)?),
+            "PalGuildItemStorage" => PalStruct::GuildItemStorage(PalGuildItemStorage::read(ar)?),
+            "PalGuildLab" => PalStruct::GuildLab(PalGuildLab::read(ar)?),
+            "PalItemContainerSlots" => {
+                PalStruct::ItemContainerSlots(PalItemContainerSlot::read(ar)?)
+            }
+            "PalCharacterContainer" => {
+                PalStruct::CharacterContainer(PalCharacterContainer::read(ar)?)
+            }
+            "PalConnector" => PalStruct::Connector(PalConnector::read(ar)?),
+            "PalBaseCamp" => PalStruct::BaseCamp(PalBaseCamp::read(ar)?.into()),
+            "PalWork" => PalStruct::Work(PalWork::read(ar)?.into()),
+            "PalWorkAssign" => {
+                PalStruct::WorkAssign(PalWorkAssign::read_with_work_type(ar, "Unknown")?)
+            }
+            "PalMapModel" => PalStruct::MapModel(PalMapModel::read(ar)?.into()),
+            "PalMapConcreteModel" => {
+                PalStruct::MapConcreteModel(PalMapConcreteModel::read(ar)?.into())
+            }
+            "PalMapConcreteModelModule" => {
+                PalStruct::MapConcreteModelModule(PalMapConcreteModelModule::read(ar)?)
+            }
+            other => {
+                return Err(crate::Error::Other(format!(
+                    "unknown Palworld struct type {other:?}"
+                )))
+            }
+        })
+    }
+
+    /// Deserialize a Palworld struct by name.
+    ///
+    /// Note: the schema-threading variants (`PalCharacterData`, `PalDynamicItem`,
+    /// `PalMapConcreteModel`) need the property schemas + path to interpret their
+    /// nested `Properties`, which this by-name entry point does not carry, so they
+    /// are not handled here. The self-describing variants deserialize directly.
+    fn deserialize_struct<'de, D, T: crate::ArchiveType>(
+        name: &str,
+        d: D,
+    ) -> std::result::Result<Self::Struct<T>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::Deserialize;
+        Ok(match bare_name(name) {
+            "PalItemContainer" => PalStruct::ItemContainer(PalItemContainer::deserialize(d)?),
+            "PalGroupData" => PalStruct::GroupData(PalGroupData::deserialize(d)?),
+            "PalBuildProcess" => PalStruct::BuildProcess(PalBuildProcess::deserialize(d)?),
+            "PalGuildItemStorage" => {
+                PalStruct::GuildItemStorage(PalGuildItemStorage::deserialize(d)?)
+            }
+            "PalGuildLab" => PalStruct::GuildLab(PalGuildLab::deserialize(d)?),
+            "PalItemContainerSlots" => {
+                PalStruct::ItemContainerSlots(PalItemContainerSlot::deserialize(d)?)
+            }
+            "PalCharacterContainer" => {
+                PalStruct::CharacterContainer(PalCharacterContainer::deserialize(d)?)
+            }
+            "PalConnector" => PalStruct::Connector(PalConnector::deserialize(d)?),
+            "PalBaseCamp" => PalStruct::BaseCamp(PalBaseCamp::deserialize(d)?.into()),
+            "PalWork" => PalStruct::Work(PalWork::deserialize(d)?.into()),
+            "PalWorkAssign" => PalStruct::WorkAssign(PalWorkAssign::deserialize(d)?),
+            "PalMapModel" => PalStruct::MapModel(PalMapModel::deserialize(d)?.into()),
+            "PalMapConcreteModelModule" => {
+                PalStruct::MapConcreteModelModule(PalMapConcreteModelModule::deserialize(d)?)
+            }
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "Palworld struct {other:?} cannot be deserialized without schema context"
+                )))
+            }
+        })
+    }
+
+    /// Called for every property after it has been read (with the property
+    /// name on the scope). Converts Palworld data embedded as byte arrays
+    /// into typed struct values when the current path is registered with a
+    /// Pal struct type in the [`Types`] specification, updating `tag` (and
+    /// thereby the recorded schema) to match.
+    fn process_property_for_read<R: Read + Seek>(
+        ar: &mut SaveGameArchive<R, Self>,
+        tag: &mut PropertyTagPartial,
+        value: Property<SaveGameArchiveType<Self>>,
+    ) -> Result<Property<SaveGameArchiveType<Self>>> {
+        let Some(hint) = ar.get_type().cloned() else {
+            return Ok(value);
+        };
+
+        // MapObjectSaveData elements need context-dependent parsing (the embedded
+        // data formats depend on sibling properties such as MapObjectId)
+        if ar.scope.path() == MAP_OBJECT_SAVE_DATA_PATH {
+            if let Property::Array(ValueVec::Struct(mut values)) = value {
+                for (i, struct_value) in values.iter_mut().enumerate() {
+                    match struct_value {
+                        StructValue::Struct(properties) => {
+                            map_object::parse_map_object_with_context(ar, properties)?;
+                        }
+                        other => {
+                            return Err(crate::Error::Other(format!(
+                                "Expected struct value for MapObjectSaveData element {}, got: {:?}",
+                                i + 1,
+                                other
+                            )))
+                        }
+                    }
+                }
+                return Ok(Property::Array(ValueVec::Struct(values)));
+            }
+            return Ok(value);
+        }
+
+        // Group RawData depends on the sibling GroupType property: the blob itself
+        // carries no marker of which group schema it follows.
+        if ar.scope.path() == GROUP_SAVE_DATA_PATH {
+            if let Property::Map(mut entries) = value {
+                for entry in entries.iter_mut() {
+                    let Property::Struct(StructValue::Struct(group_properties)) = &mut entry.value
+                    else {
+                        continue;
+                    };
+                    let group_type = match group_properties.0.get(&PropertyKey::from("GroupType")) {
+                        Some(Property::Enum(t))
+                        | Some(Property::Str(t))
+                        | Some(Property::Name(t)) => t.clone(),
+                        _ => continue,
+                    };
+                    if let Some(raw_data_prop) =
+                        group_properties.0.get_mut(&PropertyKey::from("RawData"))
+                    {
+                        map_object::convert_embedded(
+                            ar,
+                            raw_data_prop,
+                            // Map entries do not push Key/Value scope segments, so
+                            // value properties live directly under the map path
+                            &["RawData"],
+                            StructType::Game("PalGroupData".to_owned()),
+                            move |nested| {
+                                Ok(StructValue::Game(PalStruct::GroupData(
+                                    groups::PalGroupData::read_with_group_type(
+                                        nested,
+                                        &group_type,
+                                    )?,
+                                )))
+                            },
+                        )?;
+                    }
+                }
+                return Ok(Property::Map(entries));
+            }
+            return Ok(value);
+        }
+
+        // Work RawData depends on the sibling WorkableType property, which also
+        // decides the tail of each of the work's assignment records.
+        if ar.scope.path() == WORK_SAVE_DATA_PATH {
+            if let Property::Array(ValueVec::Struct(mut values)) = value {
+                for struct_value in values.iter_mut() {
+                    if let StructValue::Struct(work_properties) = struct_value {
+                        work::parse_work_with_context(ar, work_properties)?;
+                    }
+                }
+                return Ok(Property::Array(ValueVec::Struct(values)));
+            }
+            return Ok(value);
+        }
+
+        if !is_pal_struct_type(&hint) {
+            return Ok(value);
+        }
+        let Property::Array(ValueVec::Byte(ByteArray::Byte(bytes))) = &value else {
+            return Ok(value);
+        };
+        // Empty payloads stay as byte arrays and round-trip unchanged
+        if bytes.is_empty() {
+            return Ok(value);
+        }
+
+        let len = bytes.len() as u64;
+        let parsed = ar.with_nested(Cursor::new(bytes.clone()), |nested| {
+            let struct_value = StructValue::read(nested, &hint)?;
+            // Refuse partial parses: unconsumed bytes would be lost on rewrite
+            let consumed = nested.stream_position()?;
+            if consumed != len {
+                return Err(crate::Error::Other(format!(
+                    "Palworld struct {hint:?} consumed only {consumed} of {len} bytes"
+                )));
+            }
+            Ok(struct_value)
+        });
+
+        match parsed {
+            Ok(struct_value) => {
+                tag.data = PropertyTagDataPartial::Struct {
+                    struct_type: hint,
+                    id: Default::default(),
+                };
+                Ok(Property::Struct(struct_value))
+            }
+            Err(e) if ar.error_to_raw() => {
+                if ar.log() {
+                    eprintln!(
+                        "Warning: Failed to parse Palworld data at '{}', leaving as raw bytes: {}",
+                        ar.scope.path(),
+                        e
+                    );
+                }
+                Ok(value)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Called for every property before it is written (with the property name on
+    /// the scope). Serializes typed Palworld struct values back into the byte
+    /// arrays they are embedded as, based on the schema recorded when reading.
+    fn process_property_for_write<W: Write + Seek>(
+        ar: &mut SaveGameArchive<W, Self>,
+        _key: &PropertyKey,
+        tag: &PropertyTagPartial,
+        prop: &Property<SaveGameArchiveType<Self>>,
+    ) -> Result<Option<(PropertyTagPartial, Property<SaveGameArchiveType<Self>>)>> {
+        let PropertyTagDataPartial::Struct { struct_type, .. } = &tag.data else {
+            return Ok(None);
+        };
+        if !is_pal_struct_type(struct_type) {
+            return Ok(None);
+        }
+
+        let byte_array_tag = PropertyTagPartial {
+            id: tag.id,
+            data: PropertyTagDataPartial::Array(Box::new(PropertyTagDataPartial::Byte(None))),
+        };
+
+        match prop {
+            // Empty/unparsed payloads were left as byte arrays on read
+            Property::Array(ValueVec::Byte(ByteArray::Byte(_))) => {
+                Ok(Some((byte_array_tag, prop.clone())))
+            }
+            Property::Struct(struct_value) => {
+                let mut buf = Vec::new();
+                ar.with_nested(Cursor::new(&mut buf), |nested| struct_value.write(nested))?;
+                Ok(Some((
+                    byte_array_tag,
+                    Property::Array(ValueVec::Byte(ByteArray::Byte(buf))),
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
 pub(crate) fn bytes_remaining<A: ArchiveReader>(ar: &mut A) -> Result<u64> {
     let position = ar.stream_position()?;
     let end = ar.seek(std::io::SeekFrom::End(0))?;
@@ -56,25 +334,13 @@ pub(crate) fn bytes_remaining<A: ArchiveReader>(ar: &mut A) -> Result<u64> {
 }
 
 pub(crate) fn is_pal_struct_type(t: &StructType) -> bool {
-    matches!(
-        t,
-        StructType::PalCharacterData
-            | StructType::PalItemContainer
-            | StructType::PalGroupData
-            | StructType::PalDynamicItem
-            | StructType::PalBuildProcess
-            | StructType::PalGuildItemStorage
-            | StructType::PalGuildLab
-            | StructType::PalItemContainerSlots
-            | StructType::PalCharacterContainer
-            | StructType::PalConnector
-            | StructType::PalBaseCamp
-            | StructType::PalWork
-            | StructType::PalWorkAssign
-            | StructType::PalMapModel
-            | StructType::PalMapConcreteModel
-            | StructType::PalMapConcreteModelModule
-    )
+    matches!(t, StructType::Game(name) if Palworld::is_game_struct_type(name))
+}
+
+/// Build a Palworld [`StructType`] (a `StructType::Game`) for the given bare
+/// `PalXxx` name.
+pub(crate) fn pal_struct_type(name: &str) -> StructType {
+    StructType::Game(name.to_owned())
 }
 
 /// Build a [`Types`] specification for parsing Palworld save files (Level.sav,
@@ -153,215 +419,39 @@ pub fn palworld_types() -> Types {
     let pal_hints = [
         (
             "worldSaveData.CharacterSaveParameterMap.RawData",
-            StructType::PalCharacterData,
+            "PalCharacterData",
         ),
         (
             "worldSaveData.ItemContainerSaveData.RawData",
-            StructType::PalItemContainer,
+            "PalItemContainer",
         ),
         (
             "worldSaveData.ItemContainerSaveData.Slots.RawData",
-            StructType::PalItemContainerSlots,
+            "PalItemContainerSlots",
         ),
         (
             "worldSaveData.CharacterContainerSaveData.Slots.RawData",
-            StructType::PalCharacterContainer,
+            "PalCharacterContainer",
         ),
         (
             "worldSaveData.DynamicItemSaveData.RawData",
-            StructType::PalDynamicItem,
+            "PalDynamicItem",
         ),
-        (
-            "worldSaveData.BaseCampSaveData.RawData",
-            StructType::PalBaseCamp,
-        ),
+        ("worldSaveData.BaseCampSaveData.RawData", "PalBaseCamp"),
         (
             "worldSaveData.GuildExtraSaveDataMap.GuildItemStorage.RawData",
-            StructType::PalGuildItemStorage,
+            "PalGuildItemStorage",
         ),
         (
             "worldSaveData.GuildExtraSaveDataMap.Lab.RawData",
-            StructType::PalGuildLab,
+            "PalGuildLab",
         ),
     ];
-    for (path, t) in pal_hints {
-        types.add(path.to_string(), t);
+    for (path, name) in pal_hints {
+        types.add(path.to_string(), pal_struct_type(name));
     }
 
     types
-}
-
-/// Called for every property after it has been read (with the property name on
-/// the scope). Converts Palworld data embedded as byte arrays into typed struct
-/// values when the current path is registered with a Pal struct type in the
-/// [`Types`] specification, updating `tag` (and thereby the recorded schema) to
-/// match.
-pub(crate) fn process_property_for_read<R: Read + Seek, G: Game>(
-    ar: &mut SaveGameArchive<R, G>,
-    tag: &mut PropertyTagPartial,
-    value: Property<SaveGameArchiveType<G>>,
-) -> Result<Property<SaveGameArchiveType<G>>> {
-    let Some(hint) = ar.get_type().cloned() else {
-        return Ok(value);
-    };
-
-    // MapObjectSaveData elements need context-dependent parsing (the embedded
-    // data formats depend on sibling properties such as MapObjectId)
-    if ar.scope.path() == MAP_OBJECT_SAVE_DATA_PATH {
-        if let Property::Array(ValueVec::Struct(mut values)) = value {
-            for (i, struct_value) in values.iter_mut().enumerate() {
-                match struct_value {
-                    StructValue::Struct(properties) => {
-                        map_object::parse_map_object_with_context(ar, properties)?;
-                    }
-                    other => {
-                        return Err(crate::Error::Other(format!(
-                            "Expected struct value for MapObjectSaveData element {}, got: {:?}",
-                            i + 1,
-                            other
-                        )))
-                    }
-                }
-            }
-            return Ok(Property::Array(ValueVec::Struct(values)));
-        }
-        return Ok(value);
-    }
-
-    // Group RawData depends on the sibling GroupType property: the blob itself
-    // carries no marker of which group schema it follows.
-    if ar.scope.path() == GROUP_SAVE_DATA_PATH {
-        if let Property::Map(mut entries) = value {
-            for entry in entries.iter_mut() {
-                let Property::Struct(StructValue::Struct(group_properties)) = &mut entry.value
-                else {
-                    continue;
-                };
-                let group_type = match group_properties.0.get(&PropertyKey::from("GroupType")) {
-                    Some(Property::Enum(t)) | Some(Property::Str(t)) | Some(Property::Name(t)) => {
-                        t.clone()
-                    }
-                    _ => continue,
-                };
-                if let Some(raw_data_prop) =
-                    group_properties.0.get_mut(&PropertyKey::from("RawData"))
-                {
-                    map_object::convert_embedded(
-                        ar,
-                        raw_data_prop,
-                        // Map entries do not push Key/Value scope segments, so
-                        // value properties live directly under the map path
-                        &["RawData"],
-                        StructType::PalGroupData,
-                        move |nested| {
-                            Ok(StructValue::PalGroupData(
-                                groups::PalGroupData::read_with_group_type(nested, &group_type)?,
-                            ))
-                        },
-                    )?;
-                }
-            }
-            return Ok(Property::Map(entries));
-        }
-        return Ok(value);
-    }
-
-    // Work RawData depends on the sibling WorkableType property, which also
-    // decides the tail of each of the work's assignment records.
-    if ar.scope.path() == WORK_SAVE_DATA_PATH {
-        if let Property::Array(ValueVec::Struct(mut values)) = value {
-            for struct_value in values.iter_mut() {
-                if let StructValue::Struct(work_properties) = struct_value {
-                    work::parse_work_with_context(ar, work_properties)?;
-                }
-            }
-            return Ok(Property::Array(ValueVec::Struct(values)));
-        }
-        return Ok(value);
-    }
-
-    if !is_pal_struct_type(&hint) {
-        return Ok(value);
-    }
-    let Property::Array(ValueVec::Byte(ByteArray::Byte(bytes))) = &value else {
-        return Ok(value);
-    };
-    // Empty payloads stay as byte arrays and round-trip unchanged
-    if bytes.is_empty() {
-        return Ok(value);
-    }
-
-    let len = bytes.len() as u64;
-    let parsed = ar.with_nested(Cursor::new(bytes.clone()), |nested| {
-        let struct_value = StructValue::read(nested, &hint)?;
-        // Refuse partial parses: unconsumed bytes would be lost on rewrite
-        let consumed = nested.stream_position()?;
-        if consumed != len {
-            return Err(crate::Error::Other(format!(
-                "Palworld struct {hint:?} consumed only {consumed} of {len} bytes"
-            )));
-        }
-        Ok(struct_value)
-    });
-
-    match parsed {
-        Ok(struct_value) => {
-            tag.data = PropertyTagDataPartial::Struct {
-                struct_type: hint,
-                id: Default::default(),
-            };
-            Ok(Property::Struct(struct_value))
-        }
-        Err(e) if ar.error_to_raw() => {
-            if ar.log() {
-                eprintln!(
-                    "Warning: Failed to parse Palworld data at '{}', leaving as raw bytes: {}",
-                    ar.scope.path(),
-                    e
-                );
-            }
-            Ok(value)
-        }
-        Err(e) => Err(e),
-    }
-}
-
-/// Called for every property before it is written (with the property name on
-/// the scope). Serializes typed Palworld struct values back into the byte
-/// arrays they are embedded as, based on the schema recorded when reading.
-pub(crate) fn process_property_for_write<W: Write + Seek, G: Game>(
-    ar: &mut SaveGameArchive<W, G>,
-    _key: &PropertyKey,
-    tag: &PropertyTagPartial,
-    prop: &Property<SaveGameArchiveType<G>>,
-) -> Result<Option<(PropertyTagPartial, Property<SaveGameArchiveType<G>>)>> {
-    let PropertyTagDataPartial::Struct { struct_type, .. } = &tag.data else {
-        return Ok(None);
-    };
-    if !is_pal_struct_type(struct_type) {
-        return Ok(None);
-    }
-
-    let byte_array_tag = PropertyTagPartial {
-        id: tag.id,
-        data: PropertyTagDataPartial::Array(Box::new(PropertyTagDataPartial::Byte(None))),
-    };
-
-    match prop {
-        // Empty/unparsed payloads were left as byte arrays on read
-        Property::Array(ValueVec::Byte(ByteArray::Byte(_))) => {
-            Ok(Some((byte_array_tag, prop.clone())))
-        }
-        Property::Struct(struct_value) => {
-            let mut buf = Vec::new();
-            ar.with_nested(Cursor::new(&mut buf), |nested| struct_value.write(nested))?;
-            Ok(Some((
-                byte_array_tag,
-                Property::Array(ValueVec::Byte(ByteArray::Byte(buf))),
-            )))
-        }
-        _ => Ok(None),
-    }
 }
 
 #[cfg(test)]

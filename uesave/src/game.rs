@@ -4,13 +4,17 @@ use std::marker::PhantomData;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::archive::{ArchiveType, ArchiveWriter, SaveGameArchiveType};
+use crate::archive::{ArchiveReader, ArchiveType, ArchiveWriter, SaveGameArchiveType};
 use crate::{Error, Property, PropertyKey, PropertyTagPartial, Result, SaveGameArchive};
 
 /// A game struct value: read/write against an archive plus native serde.
-pub trait GameStruct<T: ArchiveType>:
-    Clone + PartialEq + std::fmt::Debug + Serialize + for<'de> Deserialize<'de>
-{
+///
+/// Note: only `Serialize` is required (game structs serialize as part of the
+/// untagged [`crate::StructValue`] enum). Deserialization is routed through
+/// [`Game::deserialize_struct`] by name, which some game structs implement with
+/// schema-threading seeds rather than a standalone `Deserialize` impl, so no
+/// `Deserialize` supertrait bound is imposed here.
+pub trait GameStruct<T: ArchiveType>: Clone + PartialEq + std::fmt::Debug + Serialize {
     fn write<A: ArchiveWriter<ArchiveType = T>>(&self, ar: &mut A) -> Result<()>;
 }
 
@@ -25,10 +29,14 @@ pub trait Game: Clone + PartialEq + std::fmt::Debug + Default + Serialize + 'sta
     }
 
     /// Read a game struct from the archive given its resolved type name.
-    fn read_struct<R: Read + std::io::Seek>(
-        ar: &mut SaveGameArchive<R, Self>,
+    ///
+    /// Generic over the archive reader (rather than a concrete
+    /// [`SaveGameArchive`]) so it can be dispatched from the generic
+    /// `StructValue::read`, where only an [`ArchiveReader`] is in hand.
+    fn read_struct<A: ArchiveReader>(
+        ar: &mut A,
         name: &str,
-    ) -> Result<Self::Struct<SaveGameArchiveType<Self>>>;
+    ) -> Result<Self::Struct<A::ArchiveType>>;
 
     /// Deserialize a game struct from serde given its type name.
     fn deserialize_struct<'de, D, T: ArchiveType>(
@@ -122,10 +130,10 @@ impl<T: ArchiveType> GameStruct<T> for Never<T> {
 pub struct NoGame;
 impl Game for NoGame {
     type Struct<T: ArchiveType> = Never<T>;
-    fn read_struct<R: Read + std::io::Seek>(
-        _ar: &mut SaveGameArchive<R, Self>,
+    fn read_struct<A: ArchiveReader>(
+        _ar: &mut A,
         name: &str,
-    ) -> Result<Self::Struct<SaveGameArchiveType<Self>>> {
+    ) -> Result<Self::Struct<A::ArchiveType>> {
         Err(Error::Other(format!(
             "no game loaded for struct type {name:?}"
         )))

@@ -1260,11 +1260,79 @@ define_property_types! {
 
 macro_rules! define_struct_types {
     ($(($package:literal, $variant:ident)),* $(,)?) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Eq)]
         pub enum StructType {
             $($variant,)*
+            /// A game-specific struct type (see [`Game`]). Holds the bare
+            /// `Xxx` type name; resolved against the active game's
+            /// [`Game::is_game_struct_type`] / [`Game::read_struct`].
+            Game(String),
             Raw(String),
             Struct(Option<String>),
+        }
+
+        // `StructType::Game(name)` serializes as the bare type-name string, so a
+        // former unit variant (`StructType::PalCharacterData` → `"PalCharacterData"`)
+        // and its `Game("PalCharacterData")` replacement produce identical JSON.
+        // `Raw`/`Struct` keep their externally-tagged map form; they are therefore
+        // never encoded as a bare string, so any bare string that is not a known
+        // core variant name deserializes back to `Game`.
+        impl Serialize for StructType {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                match self {
+                    $(StructType::$variant => serializer.serialize_str(stringify!($variant)),)*
+                    StructType::Game(name) => serializer.serialize_str(name),
+                    StructType::Raw(t) => {
+                        serializer.serialize_newtype_variant("StructType", 0, "Raw", t)
+                    }
+                    StructType::Struct(t) => {
+                        serializer.serialize_newtype_variant("StructType", 1, "Struct", t)
+                    }
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for StructType {
+            fn deserialize<D: Deserializer<'de>>(
+                deserializer: D,
+            ) -> std::result::Result<Self, D::Error> {
+                struct StructTypeVisitor;
+                impl<'de> serde::de::Visitor<'de> for StructTypeVisitor {
+                    type Value = StructType;
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("a struct type name string or a tagged Raw/Struct map")
+                    }
+                    fn visit_str<E: serde::de::Error>(
+                        self,
+                        v: &str,
+                    ) -> std::result::Result<StructType, E> {
+                        Ok(match v {
+                            $(stringify!($variant) => StructType::$variant,)*
+                            "Struct" => StructType::Struct(None),
+                            _ => StructType::Game(v.to_owned()),
+                        })
+                    }
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> std::result::Result<StructType, A::Error> {
+                        let key: String = map
+                            .next_key()?
+                            .ok_or_else(|| serde::de::Error::custom("empty StructType map"))?;
+                        match key.as_str() {
+                            "Raw" => Ok(StructType::Raw(map.next_value()?)),
+                            "Struct" => Ok(StructType::Struct(map.next_value()?)),
+                            other => Err(serde::de::Error::custom(format!(
+                                "unknown StructType variant {other:?}"
+                            ))),
+                        }
+                    }
+                }
+                deserializer.deserialize_any(StructTypeVisitor)
+            }
         }
 
         impl From<&str> for StructType {
@@ -1300,6 +1368,9 @@ macro_rules! define_struct_types {
             pub fn full_str(&self) -> &str {
                 match self {
                     $(StructType::$variant => concat!($package, ".", stringify!($variant)),)*
+                    // Game structs are embedded as byte arrays and never written
+                    // as struct headers, so this path holds only the bare name.
+                    StructType::Game(t) => t,
                     StructType::Raw(t) => t,
                     StructType::Struct(Some(t)) => t,
                     _ => unreachable!(),
@@ -1309,6 +1380,7 @@ macro_rules! define_struct_types {
             pub fn as_str(&self) -> &str {
                 match self {
                     $(StructType::$variant => stringify!($variant),)*
+                    StructType::Game(t) => t,
                     StructType::Raw(t) => t,
                     StructType::Struct(Some(t)) => t,
                     _ => unreachable!(),
@@ -1376,23 +1448,6 @@ define_struct_types! {
     ("/Script/Niagara", NiagaraVariableWithOffset),
     ("/Script/NiagaraShader", NiagaraDataInterfaceGeneratedFunction),
     ("/Script/NiagaraShader", NiagaraDataInterfaceGPUParamInfo),
-    // Palworld custom struct types (embedded in RawData byte arrays)
-    ("/Script/Pal", PalCharacterData),
-    ("/Script/Pal", PalItemContainer),
-    ("/Script/Pal", PalGroupData),
-    ("/Script/Pal", PalDynamicItem),
-    ("/Script/Pal", PalBuildProcess),
-    ("/Script/Pal", PalGuildItemStorage),
-    ("/Script/Pal", PalGuildLab),
-    ("/Script/Pal", PalItemContainerSlots),
-    ("/Script/Pal", PalCharacterContainer),
-    ("/Script/Pal", PalConnector),
-    ("/Script/Pal", PalBaseCamp),
-    ("/Script/Pal", PalWork),
-    ("/Script/Pal", PalWorkAssign),
-    ("/Script/Pal", PalMapModel),
-    ("/Script/Pal", PalMapConcreteModel),
-    ("/Script/Pal", PalMapConcreteModelModule),
 }
 
 type DateTime = u64;
@@ -3975,24 +4030,9 @@ pub enum StructValue<T: ArchiveType = SaveGameArchiveType> {
     NiagaraVariableWithOffset(FNiagaraVariableWithOffset<T>),
     NiagaraDataInterfaceGeneratedFunction(FNiagaraDataInterfaceGeneratedFunction),
     NiagaraDataInterfaceGPUParamInfo(FNiagaraDataInterfaceGPUParamInfo),
-    // Palworld custom struct values (parsed from RawData byte arrays).
-    // Larger types are boxed to keep the enum size down.
-    PalCharacterData(games::palworld::PalCharacterData<T>),
-    PalItemContainer(games::palworld::PalItemContainer),
-    PalGroupData(games::palworld::PalGroupData),
-    PalDynamicItem(std::boxed::Box<games::palworld::PalDynamicItem<T>>),
-    PalBuildProcess(games::palworld::PalBuildProcess),
-    PalGuildItemStorage(games::palworld::PalGuildItemStorage),
-    PalGuildLab(games::palworld::PalGuildLab),
-    PalItemContainerSlots(games::palworld::PalItemContainerSlot),
-    PalCharacterContainer(games::palworld::PalCharacterContainer),
-    PalConnector(games::palworld::PalConnector),
-    PalBaseCamp(std::boxed::Box<games::palworld::PalBaseCamp>),
-    PalWork(std::boxed::Box<games::palworld::PalWork>),
-    PalWorkAssign(games::palworld::PalWorkAssign),
-    PalMapModel(std::boxed::Box<games::palworld::PalMapModel>),
-    PalMapConcreteModel(std::boxed::Box<games::palworld::PalMapConcreteModel<T>>),
-    PalMapConcreteModelModule(games::palworld::PalMapConcreteModelModule),
+    /// A game-specific struct value, owned by the active [`Game`] (see
+    /// [`GameStruct`]). Serializes untagged, i.e. as just its payload.
+    Game(<T::Game as Game>::Struct<T>),
     /// Raw struct data for other unknown structs serialized with HasBinaryOrNativeSerialize
     Raw(Vec<u8>),
     /// User defined struct which is simply a list of properties
@@ -4129,52 +4169,7 @@ impl<T: ArchiveType> StructValue<T> {
                     FNiagaraDataInterfaceGPUParamInfo::read(ar)?,
                 )
             }
-            StructType::PalCharacterData => {
-                StructValue::PalCharacterData(games::palworld::PalCharacterData::read(ar)?)
-            }
-            StructType::PalItemContainer => {
-                StructValue::PalItemContainer(games::palworld::PalItemContainer::read(ar)?)
-            }
-            StructType::PalGroupData => {
-                StructValue::PalGroupData(games::palworld::PalGroupData::read(ar)?)
-            }
-            StructType::PalDynamicItem => {
-                StructValue::PalDynamicItem(games::palworld::PalDynamicItem::read(ar)?.into())
-            }
-            StructType::PalBuildProcess => {
-                StructValue::PalBuildProcess(games::palworld::PalBuildProcess::read(ar)?)
-            }
-            StructType::PalGuildItemStorage => {
-                StructValue::PalGuildItemStorage(games::palworld::PalGuildItemStorage::read(ar)?)
-            }
-            StructType::PalGuildLab => {
-                StructValue::PalGuildLab(games::palworld::PalGuildLab::read(ar)?)
-            }
-            StructType::PalItemContainerSlots => {
-                StructValue::PalItemContainerSlots(games::palworld::PalItemContainerSlot::read(ar)?)
-            }
-            StructType::PalCharacterContainer => StructValue::PalCharacterContainer(
-                games::palworld::PalCharacterContainer::read(ar)?,
-            ),
-            StructType::PalConnector => {
-                StructValue::PalConnector(games::palworld::PalConnector::read(ar)?)
-            }
-            StructType::PalBaseCamp => {
-                StructValue::PalBaseCamp(games::palworld::PalBaseCamp::read(ar)?.into())
-            }
-            StructType::PalWork => StructValue::PalWork(games::palworld::PalWork::read(ar)?.into()),
-            StructType::PalWorkAssign => StructValue::PalWorkAssign(
-                games::palworld::PalWorkAssign::read_with_work_type(ar, "Unknown")?,
-            ),
-            StructType::PalMapModel => {
-                StructValue::PalMapModel(games::palworld::PalMapModel::read(ar)?.into())
-            }
-            StructType::PalMapConcreteModel => StructValue::PalMapConcreteModel(
-                games::palworld::PalMapConcreteModel::read(ar)?.into(),
-            ),
-            StructType::PalMapConcreteModelModule => StructValue::PalMapConcreteModelModule(
-                games::palworld::PalMapConcreteModelModule::read(ar)?,
-            ),
+            StructType::Game(name) => StructValue::Game(<T::Game as Game>::read_struct(ar, name)?),
             StructType::Raw(_) => unreachable!("should be handled at property level"),
             StructType::Struct(_) => StructValue::Struct(read_properties_until_none(ar)?),
         })
@@ -4224,22 +4219,7 @@ impl<T: ArchiveType> StructValue<T> {
             StructValue::NiagaraVariableWithOffset(v) => v.write(ar)?,
             StructValue::NiagaraDataInterfaceGeneratedFunction(v) => v.write(ar)?,
             StructValue::NiagaraDataInterfaceGPUParamInfo(v) => v.write(ar)?,
-            StructValue::PalCharacterData(v) => v.write(ar)?,
-            StructValue::PalItemContainer(v) => v.write(ar)?,
-            StructValue::PalGroupData(v) => v.write(ar)?,
-            StructValue::PalDynamicItem(v) => v.write(ar)?,
-            StructValue::PalBuildProcess(v) => v.write(ar)?,
-            StructValue::PalGuildItemStorage(v) => v.write(ar)?,
-            StructValue::PalGuildLab(v) => v.write(ar)?,
-            StructValue::PalItemContainerSlots(v) => v.write(ar)?,
-            StructValue::PalCharacterContainer(v) => v.write(ar)?,
-            StructValue::PalConnector(v) => v.write(ar)?,
-            StructValue::PalBaseCamp(v) => v.write(ar)?,
-            StructValue::PalWork(v) => v.write(ar)?,
-            StructValue::PalWorkAssign(v) => v.write(ar)?,
-            StructValue::PalMapModel(v) => v.write(ar)?,
-            StructValue::PalMapConcreteModel(v) => v.write(ar)?,
-            StructValue::PalMapConcreteModelModule(v) => v.write(ar)?,
+            StructValue::Game(v) => v.write(ar)?,
             StructValue::Raw(v) => ar.write_all(v)?,
             StructValue::Struct(v) => write_properties_none_terminated(ar, v)?,
         }

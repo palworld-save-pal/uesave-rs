@@ -225,7 +225,7 @@ where
         tag: &mut PropertyTagPartial,
         value: Property<SaveGameArchiveType<G>>,
     ) -> Result<Property<SaveGameArchiveType<G>>> {
-        crate::games::palworld::process_property_for_read(self, tag, value)
+        <<Self::ArchiveType as ArchiveType>::Game>::process_property_for_read(self, tag, value)
     }
 }
 impl<W, G> ArchiveWriter for SaveGameArchive<W, G>
@@ -281,6 +281,6 @@ where
         tag: &PropertyTagPartial,
         prop: &Property<SaveGameArchiveType<G>>,
     ) -> Result<Option<(PropertyTagPartial, Property<SaveGameArchiveType<G>>)>> {
-        crate::games::palworld::process_property_for_write(self, key, tag, prop)
+        <<Self::ArchiveType as ArchiveType>::Game>::process_property_for_write(self, key, tag, prop)
     }
 }

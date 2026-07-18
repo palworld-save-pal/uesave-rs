@@ -1,7 +1,8 @@
+use super::pal_struct::PalStruct;
 use super::{
     PalBuildProcess, PalConnector, PalMapConcreteModel, PalMapConcreteModelModule, PalMapModel,
+    Palworld,
 };
-use crate::game::Game;
 use crate::{
     ArchiveType, ByteArray, Properties, Property, PropertyKey, PropertyTagDataPartial,
     PropertyTagPartial, Result, SaveGameArchive, SaveGameArchiveType, StructType, StructValue,
@@ -30,14 +31,14 @@ fn determine_object_id<T: ArchiveType>(properties: &Properties<T>) -> Result<Str
 /// extended by `scope_segments` for the duration of the parse so that nested
 /// schemas are recorded at the right paths, and the schema of the property
 /// itself is updated to the given `struct_type`.
-pub(crate) fn convert_embedded<R: Read + Seek, G: Game>(
-    ar: &mut SaveGameArchive<R, G>,
-    prop: &mut Property<SaveGameArchiveType<G>>,
+pub(crate) fn convert_embedded<R: Read + Seek>(
+    ar: &mut SaveGameArchive<R, Palworld>,
+    prop: &mut Property<SaveGameArchiveType<Palworld>>,
     scope_segments: &[&str],
     struct_type: StructType,
     parse: impl FnOnce(
-        &mut SaveGameArchive<Cursor<Vec<u8>>, G>,
-    ) -> Result<StructValue<SaveGameArchiveType<G>>>,
+        &mut SaveGameArchive<Cursor<Vec<u8>>, Palworld>,
+    ) -> Result<StructValue<SaveGameArchiveType<Palworld>>>,
 ) -> Result<()> {
     let Property::Array(ValueVec::Byte(ByteArray::Byte(bytes))) = &*prop else {
         return Ok(());
@@ -52,7 +53,7 @@ pub(crate) fn convert_embedded<R: Read + Seek, G: Game>(
     for segment in scope_segments {
         ar.scope.push(segment);
     }
-    let result = (|ar: &mut SaveGameArchive<R, G>| -> Result<StructValue<SaveGameArchiveType<G>>> {
+    let result = (|ar: &mut SaveGameArchive<R, Palworld>| -> Result<StructValue<SaveGameArchiveType<Palworld>>> {
         let parsed = ar.with_nested(Cursor::new(bytes), |nested| {
             let parsed = parse(nested)?;
             // Refuse partial parses: unconsumed bytes would be lost on rewrite
@@ -98,9 +99,9 @@ pub(crate) fn convert_embedded<R: Read + Seek, G: Game>(
     }
 }
 
-pub(crate) fn parse_map_object_with_context<R: Read + Seek, G: Game>(
-    ar: &mut SaveGameArchive<R, G>,
-    properties: &mut Properties<SaveGameArchiveType<G>>,
+pub(crate) fn parse_map_object_with_context<R: Read + Seek>(
+    ar: &mut SaveGameArchive<R, Palworld>,
+    properties: &mut Properties<SaveGameArchiveType<Palworld>>,
 ) -> Result<()> {
     let map_object_id_value = determine_object_id(properties)?;
 
@@ -112,8 +113,12 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek, G: Game>(
                 ar,
                 raw_data_prop,
                 &["Model", "RawData"],
-                StructType::PalMapModel,
-                |nested| Ok(StructValue::PalMapModel(PalMapModel::read(nested)?.into())),
+                StructType::Game("PalMapModel".to_owned()),
+                |nested| {
+                    Ok(StructValue::Game(PalStruct::MapModel(
+                        PalMapModel::read(nested)?.into(),
+                    )))
+                },
             )?;
         }
 
@@ -128,8 +133,12 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek, G: Game>(
                     ar,
                     raw_data_prop,
                     &["Model", "Connector", "RawData"],
-                    StructType::PalConnector,
-                    |nested| Ok(StructValue::PalConnector(PalConnector::read(nested)?)),
+                    StructType::Game("PalConnector".to_owned()),
+                    |nested| {
+                        Ok(StructValue::Game(PalStruct::Connector(PalConnector::read(
+                            nested,
+                        )?)))
+                    },
                 )?;
             }
         }
@@ -147,8 +156,12 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek, G: Game>(
                     ar,
                     raw_data_prop,
                     &["Model", "BuildProcess", "RawData"],
-                    StructType::PalBuildProcess,
-                    |nested| Ok(StructValue::PalBuildProcess(PalBuildProcess::read(nested)?)),
+                    StructType::Game("PalBuildProcess".to_owned()),
+                    |nested| {
+                        Ok(StructValue::Game(PalStruct::BuildProcess(
+                            PalBuildProcess::read(nested)?,
+                        )))
+                    },
                 )?;
             }
         }
@@ -166,11 +179,11 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek, G: Game>(
                 ar,
                 raw_data_prop,
                 &["ConcreteModel", "RawData"],
-                StructType::PalMapConcreteModel,
+                StructType::Game("PalMapConcreteModel".to_owned()),
                 |nested| {
-                    Ok(StructValue::PalMapConcreteModel(
+                    Ok(StructValue::Game(PalStruct::MapConcreteModel(
                         PalMapConcreteModel::read_with_object_id(nested, &map_object_id)?.into(),
-                    ))
+                    )))
                 },
             )?;
         }
@@ -211,16 +224,16 @@ pub(crate) fn parse_map_object_with_context<R: Read + Seek, G: Game>(
                             // Map entries do not push Key/Value scope segments,
                             // so value properties live directly under the map path
                             &["ConcreteModel", "ModuleMap", "RawData"],
-                            StructType::PalMapConcreteModelModule,
+                            StructType::Game("PalMapConcreteModelModule".to_owned()),
                             move |nested| {
-                                Ok(StructValue::PalMapConcreteModelModule(
+                                Ok(StructValue::Game(PalStruct::MapConcreteModelModule(
                                     PalMapConcreteModelModule::read_with_module_type(
                                         nested,
                                         &module_type,
                                         module_bytes,
                                         custom_version_data,
                                     )?,
-                                ))
+                                )))
                             },
                         )?;
                     }
