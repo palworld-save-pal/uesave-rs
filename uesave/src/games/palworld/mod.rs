@@ -33,9 +33,10 @@ pub use map_model::*;
 pub use types::*;
 pub use work::*;
 
+use crate::game::Game;
 use crate::{
     ArchiveReader, ByteArray, Property, PropertyKey, PropertyTagDataPartial, PropertyTagPartial,
-    Result, SaveGameArchive, StructType, StructValue, Types, ValueVec,
+    Result, SaveGameArchive, SaveGameArchiveType, StructType, StructValue, Types, ValueVec,
 };
 use std::io::{Cursor, Read, Seek, Write};
 
@@ -195,11 +196,11 @@ pub fn palworld_types() -> Types {
 /// values when the current path is registered with a Pal struct type in the
 /// [`Types`] specification, updating `tag` (and thereby the recorded schema) to
 /// match.
-pub(crate) fn process_property_for_read<R: Read + Seek>(
-    ar: &mut SaveGameArchive<R>,
+pub(crate) fn process_property_for_read<R: Read + Seek, G: Game>(
+    ar: &mut SaveGameArchive<R, G>,
     tag: &mut PropertyTagPartial,
-    value: Property,
-) -> Result<Property> {
+    value: Property<SaveGameArchiveType<G>>,
+) -> Result<Property<SaveGameArchiveType<G>>> {
     let Some(hint) = ar.get_type().cloned() else {
         return Ok(value);
     };
@@ -328,12 +329,12 @@ pub(crate) fn process_property_for_read<R: Read + Seek>(
 /// Called for every property before it is written (with the property name on
 /// the scope). Serializes typed Palworld struct values back into the byte
 /// arrays they are embedded as, based on the schema recorded when reading.
-pub(crate) fn process_property_for_write<W: Write + Seek>(
-    ar: &mut SaveGameArchive<W>,
+pub(crate) fn process_property_for_write<W: Write + Seek, G: Game>(
+    ar: &mut SaveGameArchive<W, G>,
     _key: &PropertyKey,
     tag: &PropertyTagPartial,
-    prop: &Property,
-) -> Result<Option<(PropertyTagPartial, Property)>> {
+    prop: &Property<SaveGameArchiveType<G>>,
+) -> Result<Option<(PropertyTagPartial, Property<SaveGameArchiveType<G>>)>> {
     let PropertyTagDataPartial::Struct { struct_type, .. } = &tag.data else {
         return Ok(None);
     };

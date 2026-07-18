@@ -4,7 +4,7 @@ use crate::games::palworld::{
 };
 use crate::{
     FClothLODDataCommon, FGuid, FMeshToMeshVertData, FNiagaraVariable, FNiagaraVariableBase,
-    FNiagaraVariableWithOffset, Properties, Property, PropertyKey, PropertySchemas,
+    FNiagaraVariableWithOffset, NoGame, Properties, Property, PropertyKey, PropertySchemas,
     PropertyTagDataPartial, Root, Save, SoftObjectPath, StructType, StructValue, ValueVec,
 };
 use serde::{
@@ -788,8 +788,8 @@ impl<'de, 'a> Visitor<'de> for PropertiesSeed<'a> {
     }
 }
 
-// Deserialize implementation for Save
-impl<'de> Deserialize<'de> for Save {
+// Deserialize is implemented only for the default `NoGame` game.
+impl<'de> Deserialize<'de> for Save<NoGame> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -806,7 +806,7 @@ impl<'de> Deserialize<'de> for Save {
         struct SaveVisitor;
 
         impl<'de> Visitor<'de> for SaveVisitor {
-            type Value = Save;
+            type Value = Save<NoGame>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("Save struct")

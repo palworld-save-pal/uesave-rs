@@ -2,11 +2,13 @@ use std::{
     cell::RefCell,
     collections::BTreeMap,
     io::{Read, Seek, Write},
+    marker::PhantomData,
     rc::Rc,
 };
 
 use serde::{Deserialize, Serialize};
 
+use crate::game::{Game, NoGame};
 use crate::{Header, PropertyTagPartial, Result, StructType};
 
 /// Used to disambiguate types within a [`Property::Set`] or [`Property::Map`] during parsing.
@@ -86,7 +88,7 @@ impl Scope {
 }
 
 #[derive(Debug)]
-pub struct SaveGameArchive<S> {
+pub struct SaveGameArchive<S, G: Game = NoGame> {
     pub(crate) stream: S,
     pub(crate) version: Option<Header>,
     pub(crate) types: Rc<Types>,
@@ -94,18 +96,19 @@ pub struct SaveGameArchive<S> {
     pub(crate) log: bool,
     pub(crate) error_to_raw: bool,
     pub(crate) schemas: Rc<RefCell<PropertySchemas>>,
+    pub(crate) _game: PhantomData<G>,
 }
-impl<R: Read> Read for SaveGameArchive<R> {
+impl<R: Read, G: Game> Read for SaveGameArchive<R, G> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.stream.read(buf)
     }
 }
-impl<S: Seek> Seek for SaveGameArchive<S> {
+impl<S: Seek, G: Game> Seek for SaveGameArchive<S, G> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         self.stream.seek(pos)
     }
 }
-impl<W: Write + Seek> Write for SaveGameArchive<W> {
+impl<W: Write + Seek, G: Game> Write for SaveGameArchive<W, G> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.stream.write(buf)
     }
@@ -114,7 +117,7 @@ impl<W: Write + Seek> Write for SaveGameArchive<W> {
     }
 }
 
-impl<S> SaveGameArchive<S> {
+impl<S, G: Game> SaveGameArchive<S, G> {
     /// Construct a new archive around `stream`. The version (Header) must be set
     /// via [`set_version`](Self::set_version) before reading any property data,
     /// since property serialization depends on engine/package versions.
@@ -127,11 +130,12 @@ impl<S> SaveGameArchive<S> {
             log: false,
             error_to_raw: false,
             schemas: Rc::new(RefCell::new(PropertySchemas::new())),
+            _game: PhantomData,
         }
     }
     pub(crate) fn run<F, T>(stream: S, f: F) -> T
     where
-        F: FnOnce(&mut SaveGameArchive<S>) -> T,
+        F: FnOnce(&mut SaveGameArchive<S, G>) -> T,
     {
         f(&mut SaveGameArchive::new(stream))
     }
@@ -147,7 +151,7 @@ impl<S> SaveGameArchive<S> {
     pub(crate) fn with_nested<S2, T>(
         &mut self,
         stream: S2,
-        f: impl FnOnce(&mut SaveGameArchive<S2>) -> Result<T>,
+        f: impl FnOnce(&mut SaveGameArchive<S2, G>) -> Result<T>,
     ) -> Result<T> {
         let mut nested = SaveGameArchive {
             stream,
@@ -157,6 +161,7 @@ impl<S> SaveGameArchive<S> {
             log: self.log,
             error_to_raw: self.error_to_raw,
             schemas: Rc::clone(&self.schemas),
+            _game: PhantomData,
         };
         let result = f(&mut nested);
         self.scope = nested.scope;
@@ -175,7 +180,7 @@ impl<S> SaveGameArchive<S> {
         self.error_to_raw
     }
 }
-impl<R: Read + Seek> SaveGameArchive<R> {
+impl<R: Read + Seek, G: Game> SaveGameArchive<R, G> {
     pub(crate) fn get_type_or(&mut self, t: &StructType) -> Result<StructType> {
         let offset = self.stream.stream_position()?;
         Ok(self.get_type().cloned().unwrap_or_else(|| {

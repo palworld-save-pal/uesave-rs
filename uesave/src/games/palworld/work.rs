@@ -1,8 +1,9 @@
 use super::map_object::convert_embedded;
 use super::types::PalInstanceId;
+use crate::game::Game;
 use crate::{
     read_array, ArchiveReader, ArchiveWriter, Double, FGuid, Properties, Property, PropertyKey,
-    Quat, Result, SaveGameArchive, StructType, StructValue, Vector,
+    Quat, Result, SaveGameArchive, SaveGameArchiveType, StructType, StructValue, Vector,
 };
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use serde::{Deserialize, Serialize};
@@ -176,9 +177,9 @@ pub enum PalWorkTypeSpecificData {
 /// Parses the embedded data of one `WorkSaveData` element: the work itself and
 /// each of its assignment records, both of which are laid out according to the
 /// element's `WorkableType`.
-pub(crate) fn parse_work_with_context<R: Read + Seek>(
-    ar: &mut SaveGameArchive<R>,
-    properties: &mut Properties,
+pub(crate) fn parse_work_with_context<R: Read + Seek, G: Game>(
+    ar: &mut SaveGameArchive<R, G>,
+    properties: &mut Properties<SaveGameArchiveType<G>>,
 ) -> Result<()> {
     let work_type = match properties.0.get(&PropertyKey::from("WorkableType")) {
         Some(Property::Enum(t)) | Some(Property::Str(t)) | Some(Property::Name(t)) => t.clone(),

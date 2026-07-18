@@ -1,5 +1,6 @@
 use std::io::{Read, Seek, Write};
 
+use crate::game::Game;
 use crate::{
     Header, Property, PropertyKey, PropertyTagPartial, Result, SaveGameArchive, StructType,
     VersionInfo,
@@ -168,11 +169,12 @@ impl<G: crate::game::Game> ArchiveType for SaveGameArchiveType<G> {
     }
 }
 
-impl<R> ArchiveReader for SaveGameArchive<R>
+impl<R, G> ArchiveReader for SaveGameArchive<R, G>
 where
     R: Read + Seek,
+    G: Game,
 {
-    type ArchiveType = SaveGameArchiveType;
+    type ArchiveType = SaveGameArchiveType<G>;
 
     fn version(&self) -> &dyn VersionInfo {
         SaveGameArchive::version(self)
@@ -221,16 +223,17 @@ where
     fn post_process_property(
         &mut self,
         tag: &mut PropertyTagPartial,
-        value: Property,
-    ) -> Result<Property> {
+        value: Property<SaveGameArchiveType<G>>,
+    ) -> Result<Property<SaveGameArchiveType<G>>> {
         crate::games::palworld::process_property_for_read(self, tag, value)
     }
 }
-impl<W> ArchiveWriter for SaveGameArchive<W>
+impl<W, G> ArchiveWriter for SaveGameArchive<W, G>
 where
     W: Write + Seek,
+    G: Game,
 {
-    type ArchiveType = SaveGameArchiveType;
+    type ArchiveType = SaveGameArchiveType<G>;
 
     fn version(&self) -> &dyn VersionInfo {
         SaveGameArchive::version(self)
@@ -276,8 +279,8 @@ where
         &mut self,
         key: &PropertyKey,
         tag: &PropertyTagPartial,
-        prop: &Property,
-    ) -> Result<Option<(PropertyTagPartial, Property)>> {
+        prop: &Property<SaveGameArchiveType<G>>,
+    ) -> Result<Option<(PropertyTagPartial, Property<SaveGameArchiveType<G>>)>> {
         crate::games::palworld::process_property_for_write(self, key, tag, prop)
     }
 }

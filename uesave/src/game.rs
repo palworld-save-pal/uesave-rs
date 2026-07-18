@@ -26,7 +26,7 @@ pub trait Game: Clone + PartialEq + std::fmt::Debug + Default + Serialize + 'sta
 
     /// Read a game struct from the archive given its resolved type name.
     fn read_struct<R: Read + std::io::Seek>(
-        ar: &mut SaveGameArchive<R>,
+        ar: &mut SaveGameArchive<R, Self>,
         name: &str,
     ) -> Result<Self::Struct<SaveGameArchiveType<Self>>>;
 
@@ -40,7 +40,7 @@ pub trait Game: Clone + PartialEq + std::fmt::Debug + Default + Serialize + 'sta
 
     /// Post-process a freshly read property (embedded-bytes → typed value).
     fn process_property_for_read<R: Read + std::io::Seek>(
-        _ar: &mut SaveGameArchive<R>,
+        _ar: &mut SaveGameArchive<R, Self>,
         _tag: &mut PropertyTagPartial,
         value: Property<SaveGameArchiveType<Self>>,
     ) -> Result<Property<SaveGameArchiveType<Self>>> {
@@ -50,7 +50,7 @@ pub trait Game: Clone + PartialEq + std::fmt::Debug + Default + Serialize + 'sta
     /// Pre-process a property about to be written (typed value → embedded bytes).
     #[allow(clippy::type_complexity)]
     fn process_property_for_write<W: Write + std::io::Seek>(
-        _ar: &mut SaveGameArchive<W>,
+        _ar: &mut SaveGameArchive<W, Self>,
         _key: &PropertyKey,
         _tag: &PropertyTagPartial,
         _prop: &Property<SaveGameArchiveType<Self>>,
@@ -123,7 +123,7 @@ pub struct NoGame;
 impl Game for NoGame {
     type Struct<T: ArchiveType> = Never<T>;
     fn read_struct<R: Read + std::io::Seek>(
-        _ar: &mut SaveGameArchive<R>,
+        _ar: &mut SaveGameArchive<R, Self>,
         name: &str,
     ) -> Result<Self::Struct<SaveGameArchiveType<Self>>> {
         Err(Error::Other(format!(

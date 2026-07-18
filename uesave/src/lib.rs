@@ -5055,13 +5055,14 @@ impl Header {
 
 /// Root struct inside a save file which holds both the Unreal Engine class name and list of properties
 #[derive(Debug, PartialEq, Serialize)]
-pub struct Root {
+#[serde(bound(serialize = "T::ObjectRef: Serialize"))]
+pub struct Root<T: ArchiveType = SaveGameArchiveType> {
     pub save_game_type: String,
-    pub properties: Properties,
+    pub properties: Properties<T>,
 }
-impl Root {
+impl<T: ArchiveType> Root<T> {
     #[cfg_attr(feature = "tracing", instrument(name = "Root_read", skip_all))]
-    fn read<A: ArchiveReader<ArchiveType = SaveGameArchiveType>>(ar: &mut A) -> Result<Self> {
+    fn read<A: ArchiveReader<ArchiveType = T>>(ar: &mut A) -> Result<Self> {
         let save_game_type = ar.read_string()?;
         if ar.version().property_tag() {
             ar.read_u8()?;
@@ -5072,7 +5073,7 @@ impl Root {
             properties,
         })
     }
-    fn write<A: ArchiveWriter<ArchiveType = SaveGameArchiveType>>(&self, ar: &mut A) -> Result<()> {
+    fn write<A: ArchiveWriter<ArchiveType = T>>(&self, ar: &mut A) -> Result<()> {
         ar.write_string(&self.save_game_type)?;
         if ar.version().property_tag() {
             ar.write_u8(0)?;
@@ -5083,14 +5084,14 @@ impl Root {
 }
 
 #[derive(Debug, PartialEq, Serialize)]
-pub struct Save {
+pub struct Save<G: Game = NoGame> {
     pub header: Header,
     /// Property schemas (tags) separated from property data
     pub schemas: PropertySchemas,
-    pub root: Root,
+    pub root: Root<SaveGameArchiveType<G>>,
     pub extra: Vec<u8>,
 }
-impl Save {
+impl Save<NoGame> {
     /// Reads save from the given reader
     #[cfg_attr(feature = "tracing", instrument(name = "Root_read", skip_all))]
     pub fn read<R: Read>(reader: &mut R) -> Result<Self, ParseError> {
@@ -5104,6 +5105,8 @@ impl Save {
     pub fn read_with_types<R: Read>(reader: &mut R, types: Types) -> Result<Self, ParseError> {
         SaveReader::new().types(types).read(reader)
     }
+}
+impl<G: Game> Save<G> {
     pub fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
         let mut buffer = vec![];
         let schemas = Rc::new(RefCell::new(self.schemas.clone()));
@@ -5116,6 +5119,7 @@ impl Save {
             log: false,
             error_to_raw: true,
             schemas,
+            _game: std::marker::PhantomData::<G>,
         };
 
         self.header.write(&mut archive_writer)?;
@@ -5142,24 +5146,28 @@ impl Save {
     }
 }
 
-pub struct SaveReader {
+pub struct SaveReader<G: Game = NoGame> {
     log: bool,
     error_to_raw: bool,
     types: Option<Rc<Types>>,
+    _game: std::marker::PhantomData<G>,
 }
-impl Default for SaveReader {
+impl Default for SaveReader<NoGame> {
     fn default() -> Self {
         Self::new()
     }
 }
-impl SaveReader {
+impl SaveReader<NoGame> {
     pub fn new() -> Self {
         Self {
             log: false,
             error_to_raw: false,
             types: None,
+            _game: std::marker::PhantomData,
         }
     }
+}
+impl<G: Game> SaveReader<G> {
     pub fn log(mut self, log: bool) -> Self {
         self.log = log;
         self
@@ -5180,7 +5188,17 @@ impl SaveReader {
         self.types = Some(Rc::new(types));
         self
     }
-    pub fn read<S: Read>(self, mut stream: S) -> Result<Save, ParseError> {
+    /// Rebuild this reader for a different game type, carrying over the
+    /// configured options.
+    pub fn game<G2: Game>(self) -> SaveReader<G2> {
+        SaveReader {
+            log: self.log,
+            error_to_raw: self.error_to_raw,
+            types: self.types,
+            _game: std::marker::PhantomData,
+        }
+    }
+    pub fn read<S: Read>(self, mut stream: S) -> Result<Save<G>, ParseError> {
         let types = self.types.unwrap_or_else(|| Rc::new(Types::new()));
         let schemas = Rc::new(RefCell::new(PropertySchemas::new()));
 
@@ -5189,7 +5207,7 @@ impl SaveReader {
         let data = compression::decompress_save(&mut stream)
             .map_err(|error| error::ParseError { offset: 0, error })?;
         let stream = SeekReader::new(Cursor::new(data));
-        let mut reader = SaveGameArchive {
+        let mut reader: SaveGameArchive<_, G> = SaveGameArchive {
             stream,
             version: None,
             types,
@@ -5197,6 +5215,7 @@ impl SaveReader {
             log: self.log,
             error_to_raw: self.error_to_raw,
             schemas: schemas.clone(),
+            _game: std::marker::PhantomData,
         };
 
         let result = || -> Result<_> {

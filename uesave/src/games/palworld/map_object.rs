@@ -1,13 +1,15 @@
 use super::{
     PalBuildProcess, PalConnector, PalMapConcreteModel, PalMapConcreteModelModule, PalMapModel,
 };
+use crate::game::Game;
 use crate::{
-    ByteArray, Properties, Property, PropertyKey, PropertyTagDataPartial, PropertyTagPartial,
-    Result, SaveGameArchive, StructType, StructValue, ValueVec,
+    ArchiveType, ByteArray, Properties, Property, PropertyKey, PropertyTagDataPartial,
+    PropertyTagPartial, Result, SaveGameArchive, SaveGameArchiveType, StructType, StructValue,
+    ValueVec,
 };
 use std::io::{Cursor, Read, Seek};
 
-fn determine_object_id(properties: &Properties) -> Result<String> {
+fn determine_object_id<T: ArchiveType>(properties: &Properties<T>) -> Result<String> {
     let map_object_id = properties
         .0
         .get(&PropertyKey::from("MapObjectId"))
@@ -28,12 +30,14 @@ fn determine_object_id(properties: &Properties) -> Result<String> {
 /// extended by `scope_segments` for the duration of the parse so that nested
 /// schemas are recorded at the right paths, and the schema of the property
 /// itself is updated to the given `struct_type`.
-pub(crate) fn convert_embedded<R: Read + Seek>(
-    ar: &mut SaveGameArchive<R>,
-    prop: &mut Property,
+pub(crate) fn convert_embedded<R: Read + Seek, G: Game>(
+    ar: &mut SaveGameArchive<R, G>,
+    prop: &mut Property<SaveGameArchiveType<G>>,
     scope_segments: &[&str],
     struct_type: StructType,
-    parse: impl FnOnce(&mut SaveGameArchive<Cursor<Vec<u8>>>) -> Result<StructValue>,
+    parse: impl FnOnce(
+        &mut SaveGameArchive<Cursor<Vec<u8>>, G>,
+    ) -> Result<StructValue<SaveGameArchiveType<G>>>,
 ) -> Result<()> {
     let Property::Array(ValueVec::Byte(ByteArray::Byte(bytes))) = &*prop else {
         return Ok(());
@@ -48,7 +52,7 @@ pub(crate) fn convert_embedded<R: Read + Seek>(
     for segment in scope_segments {
         ar.scope.push(segment);
     }
-    let result = (|ar: &mut SaveGameArchive<R>| -> Result<StructValue> {
+    let result = (|ar: &mut SaveGameArchive<R, G>| -> Result<StructValue<SaveGameArchiveType<G>>> {
         let parsed = ar.with_nested(Cursor::new(bytes), |nested| {
             let parsed = parse(nested)?;
             // Refuse partial parses: unconsumed bytes would be lost on rewrite
@@ -94,9 +98,9 @@ pub(crate) fn convert_embedded<R: Read + Seek>(
     }
 }
 
-pub(crate) fn parse_map_object_with_context<R: Read + Seek>(
-    ar: &mut SaveGameArchive<R>,
-    properties: &mut Properties,
+pub(crate) fn parse_map_object_with_context<R: Read + Seek, G: Game>(
+    ar: &mut SaveGameArchive<R, G>,
+    properties: &mut Properties<SaveGameArchiveType<G>>,
 ) -> Result<()> {
     let map_object_id_value = determine_object_id(properties)?;
 
