@@ -75,7 +75,7 @@ pub trait GameCli {
         original: &[u8],
         types: Types,
         log: bool,
-        debug: &mut dyn FnMut(&str, &[u8]),
+        debug: &mut dyn FnMut(&str, &[u8]) -> Result<()>,
     ) -> Result<()>;
 }
 
@@ -135,7 +135,7 @@ impl<G: GameInfo> GameCli for Handle<G> {
         original: &[u8],
         types: Types,
         log: bool,
-        debug: &mut dyn FnMut(&str, &[u8]),
+        debug: &mut dyn FnMut(&str, &[u8]) -> Result<()>,
     ) -> Result<()> {
         let save: Save<G> = SaveReader::new()
             .game::<G>()
@@ -147,24 +147,24 @@ impl<G: GameInfo> GameCli for Handle<G> {
 
         let mut output = vec![];
         save.write(&mut output)?;
-        debug("output.sav", &output);
+        debug("output.sav", &output)?;
         if original != output.as_slice() {
             return Err(Error::Other("Resave did not match".into()));
         }
 
         let input_json =
             serde_json::to_vec_pretty(&save).map_err(|e| Error::Other(e.to_string()))?;
-        debug("input.json", &input_json);
+        debug("input.json", &input_json)?;
 
         let save_from_json: Save<G> =
             serde_json::from_slice(&input_json).map_err(|e| Error::Other(e.to_string()))?;
         let output_json =
             serde_json::to_vec_pretty(&save_from_json).map_err(|e| Error::Other(e.to_string()))?;
-        debug("output.json", &output_json);
+        debug("output.json", &output_json)?;
 
         let mut output = vec![];
         save_from_json.write(&mut output)?;
-        debug("output.sav", &output);
+        debug("output.sav", &output)?;
         if original != output.as_slice() {
             return Err(Error::Other("JSON round trip did not match".into()));
         }

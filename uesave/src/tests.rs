@@ -1613,26 +1613,65 @@ fn test_registry_contains_palworld_with_formats() {
 #[cfg(feature = "cli")]
 #[test]
 fn test_palworld_facade_json_roundtrip() -> Result<()> {
-    use games::palworld::Palworld;
+    use games::palworld::{PalStruct, Palworld};
 
-    // A Palworld save whose RawData parses into a typed game struct.
-    let char_blob = unhex("050000004e6f6e650001020304000102030405060708090a0b0c0d0e0f0a0b0c0d");
-    let byte_tag = PropertyTagPartial {
-        id: None,
-        data: PropertyTagDataPartial::Array(std::boxed::Box::new(PropertyTagDataPartial::Byte(
-            None,
-        ))),
-    };
+    // The RawData must sit at a path palworld_types() registers, so that the
+    // facade's default_types() drives real struct parsing; at an unregistered
+    // path the blob stays an opaque byte array and the round trip would pass
+    // even with the Palworld codecs gone.
+    //
+    // A real SniperRifle_Default DynamicItemSaveData blob, which parses to a
+    // Weapon.
+    let dyn_blob = unhex("00000000000000000000000000000000ef8aa41f4542f82f314924941e5520a214000000536e697065725269666c655f44656661756c7400000000000400000000007a4400000000050000004e6f6e650000000000");
+
     let mut schemas = PropertySchemas::new();
-    schemas.record("Char".to_string(), byte_tag);
+    schemas.record(
+        "worldSaveData".to_string(),
+        PropertyTagPartial {
+            id: None,
+            data: PropertyTagDataPartial::Struct {
+                struct_type: StructType::Struct(Some("TestPkg.worldSaveData".to_string())),
+                id: FGuid::default(),
+            },
+        },
+    );
+    schemas.record(
+        "worldSaveData.DynamicItemSaveData".to_string(),
+        PropertyTagPartial {
+            id: None,
+            data: PropertyTagDataPartial::Struct {
+                struct_type: StructType::Struct(Some("TestPkg.DynamicItemSaveData".to_string())),
+                id: FGuid::default(),
+            },
+        },
+    );
+    schemas.record(
+        "worldSaveData.DynamicItemSaveData.RawData".to_string(),
+        PropertyTagPartial {
+            id: None,
+            data: PropertyTagDataPartial::Array(std::boxed::Box::new(
+                PropertyTagDataPartial::Byte(None),
+            )),
+        },
+    );
+
+    let dynamic_item_save_data = Properties(indexmap::IndexMap::from([(
+        PropertyKey::from("RawData"),
+        Property::Array(ValueVec::Byte(ByteArray::Byte(dyn_blob))),
+    )]));
+    let world_save_data = Properties(indexmap::IndexMap::from([(
+        PropertyKey::from("DynamicItemSaveData"),
+        Property::Struct(StructValue::Struct(dynamic_item_save_data)),
+    )]));
+
     let s0: Save<Palworld> = Save {
         header: mock_header(),
         schemas,
         root: Root {
             save_game_type: "TestSave".to_string(),
             properties: Properties(indexmap::IndexMap::from([(
-                PropertyKey::from("Char"),
-                Property::Array(ValueVec::Byte(ByteArray::Byte(char_blob))),
+                PropertyKey::from("worldSaveData"),
+                Property::Struct(StructValue::Struct(world_save_data)),
             )])),
         },
         extra: vec![],
@@ -1642,6 +1681,38 @@ fn test_palworld_facade_json_roundtrip() -> Result<()> {
 
     let handler = games::registry::get("palworld").expect("palworld game");
     let types = handler.default_types();
+
+    // Prove the registered path actually drives typed parsing before trusting
+    // the facade round trip below: read directly and check the struct is
+    // Property::Struct(StructValue::Game(_)), not a byte array.
+    let checked: Save<Palworld> = SaveReader::new()
+        .game::<Palworld>()
+        .error_to_raw(false)
+        .types(types.clone())
+        .read(Cursor::new(&bytes))
+        .expect("Palworld save should read back with a typed struct");
+    match checked
+        .root
+        .properties
+        .0
+        .get(&PropertyKey::from("worldSaveData"))
+    {
+        Some(Property::Struct(StructValue::Struct(world_props))) => {
+            match world_props.0.get(&PropertyKey::from("DynamicItemSaveData")) {
+                Some(Property::Struct(StructValue::Struct(dyn_props))) => {
+                    assert!(
+                        matches!(
+                            dyn_props.0.get(&PropertyKey::from("RawData")),
+                            Some(Property::Struct(StructValue::Game(PalStruct::DynamicItem(_))))
+                        ),
+                        "RawData should parse into a typed PalDynamicItem, not stay a raw byte array"
+                    );
+                }
+                other => panic!("expected nested DynamicItemSaveData struct, got {other:?}"),
+            }
+        }
+        other => panic!("expected nested worldSaveData struct, got {other:?}"),
+    }
 
     let mut json = vec![];
     handler.to_json(&mut Cursor::new(&bytes), &mut json, types, false)?;

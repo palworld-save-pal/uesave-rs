@@ -30,7 +30,7 @@ struct ActionToJson {
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
 
-    /// Game whose save format to use (see `--game list` for names)
+    /// Game whose save format to use (an invalid name lists the available games)
     #[arg(long, default_value = "none")]
     game: String,
 }
@@ -43,7 +43,7 @@ struct ActionFromJson {
     #[arg(short, long, default_value = "-")]
     output: String,
 
-    /// Game whose save format to use (see `--game list` for names)
+    /// Game whose save format to use (an invalid name lists the available games)
     #[arg(long, default_value = "none")]
     game: String,
 
@@ -72,7 +72,7 @@ struct ActionEdit {
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
 
-    /// Game whose save format to use (see `--game list` for names)
+    /// Game whose save format to use (an invalid name lists the available games)
     #[arg(long, default_value = "none")]
     game: String,
 
@@ -110,7 +110,7 @@ struct ActionTestResave {
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
 
-    /// Game whose save format to use (see `--game list` for names)
+    /// Game whose save format to use (an invalid name lists the available games)
     #[arg(long, default_value = "none")]
     game: String,
 }
@@ -184,21 +184,20 @@ pub fn main() -> Result<()> {
         Action::ToJson(mut action) => {
             let handler = pick(&reg, &action.game)?;
             let types = merge_types(handler.default_types(), std::mem::take(&mut action.r#type));
-            handler.to_json(
-                &mut input(&action.input)?,
-                &mut output(&action.output)?,
-                types,
-                !action.no_warn,
-            )?;
+            let mut buf = vec![];
+            handler.to_json(&mut input(&action.input)?, &mut buf, types, !action.no_warn)?;
+            output(&action.output)?.write_all(&buf)?;
         }
         Action::FromJson(action) => {
             let handler = pick(&reg, &action.game)?;
             check_format(handler, action.format.as_deref())?;
+            let mut buf = vec![];
             handler.from_json(
                 &mut input(&action.input)?,
-                &mut output(&action.output)?,
+                &mut buf,
                 action.format.as_deref(),
             )?;
+            output(&action.output)?.write_all(&buf)?;
         }
         Action::Edit(mut action) => {
             let handler = pick(&reg, &action.game)?;
@@ -218,12 +217,14 @@ pub fn main() -> Result<()> {
                 println!("File unchanged, doing nothing.");
             } else {
                 println!("File modified, writing new save.");
-                let mut writer = open_for_write(&action.path)?;
+                let mut buf = vec![];
                 handler.from_json(
                     &mut Cursor::new(&edited),
-                    &mut writer,
+                    &mut buf,
                     action.format.as_deref(),
                 )?;
+                let mut writer = open_for_write(&action.path)?;
+                writer.write_all(&buf)?;
             }
         }
         Action::TestResave(mut action) => {
@@ -245,10 +246,11 @@ pub fn main() -> Result<()> {
             if want_debug {
                 fs::write("input.sav", &bytes)?;
             }
-            let mut debug = |name: &str, data: &[u8]| {
+            let mut debug = |name: &str, data: &[u8]| -> std::result::Result<(), uesave::Error> {
                 if want_debug {
-                    let _ = fs::write(name, data);
+                    fs::write(name, data)?;
                 }
+                Ok(())
             };
 
             let log = !action.no_warn;
