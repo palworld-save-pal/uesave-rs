@@ -32,6 +32,19 @@ where
     })
 }
 
+/// Same as [`run`], but pins the archive's game to Palworld instead of the
+/// default `NoGame`. Needed to drive dispatch that resolves through
+/// `<G as Game>::...` (e.g. `StructValue::read`'s `StructType::Game` arm).
+fn run_palworld<S, R, F>(s: S, f: F) -> Result<R>
+where
+    F: FnOnce(&mut SaveGameArchive<S, games::palworld::Palworld>) -> Result<R>,
+{
+    SaveGameArchive::run(s, |s| {
+        s.set_version(mock_header());
+        f(s)
+    })
+}
+
 #[test]
 fn test_header() -> Result<()> {
     let original = [
@@ -1456,6 +1469,54 @@ fn test_palworld_empty_game_struct_bytes_json_roundtrip() -> Result<()> {
         s0, s2,
         "empty game-struct payload must survive a JSON round trip as bytes"
     );
+
+    Ok(())
+}
+
+/// Covers the `StructType::Game(name)` arm of `StructValue::read`/`write`,
+/// which is distinct from the RawData hook path the embedded-struct tests
+/// exercise. It is reached when a `Set`/`Map` struct element has no embedded
+/// type path (the older save format omits it) and is resolved from a caller
+/// supplied `Types` hint, which `StructType`'s `Deserialize` maps to
+/// `StructType::Game` for any non-core name.
+#[test]
+fn test_palworld_struct_value_game_dispatch() -> Result<()> {
+    use games::palworld::{PalStruct, Palworld};
+
+    // A minimal PalConnector blob: supported_level=7, connect index=3, zero
+    // `any_place` entries, and two trailing "unknown" bytes (PalConnector's
+    // `read` consumes the rest of the stream as `unknown_bytes`).
+    let mut payload = vec![];
+    payload.extend_from_slice(&7i32.to_le_bytes());
+    payload.push(3u8);
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&[0xAA, 0xBB]);
+
+    let value: StructValue<SaveGameArchiveType<Palworld>> = run_palworld(
+        Cursor::new(payload.clone()),
+        |ar: &mut SaveGameArchive<Cursor<Vec<u8>>, Palworld>| {
+            StructValue::read(ar, &StructType::Game("PalConnector".to_string()))
+        },
+    )?;
+
+    match &value {
+        StructValue::Game(PalStruct::Connector(connector)) => {
+            assert_eq!(connector.supported_level, 7);
+            assert_eq!(connector.connect.index, 3);
+            assert!(connector.connect.any_place.is_empty());
+            assert_eq!(connector.unknown_bytes, vec![0xAA, 0xBB]);
+        }
+        other => panic!("expected StructValue::Game(PalStruct::Connector(_)), got {other:?}"),
+    }
+
+    // And the mirrored `StructValue::write` Game arm must reproduce the exact
+    // original bytes.
+    let mut rewritten = vec![];
+    run_palworld(
+        Cursor::new(&mut rewritten),
+        |ar: &mut SaveGameArchive<Cursor<&mut Vec<u8>>, Palworld>| value.write(ar),
+    )?;
+    assert_eq!(payload, rewritten, "rewrite must be byte-exact");
 
     Ok(())
 }

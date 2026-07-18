@@ -1070,7 +1070,17 @@ impl PropertyTagFull<'_> {
                 Ok(())
             }
             fn write_full_type<A: ArchiveWriter>(ar: &mut A, full_type: &str) -> Result<()> {
-                let (a, b) = full_type.split_once('.').unwrap(); // TODO
+                // `full_type` must be a `Package.Name` path here. `StructType::Game(name)`
+                // holds only a bare name (no dot) because game structs are embedded as
+                // byte arrays and never reach this struct-header write path directly (the
+                // write hook swaps the property tag to Array/Byte first) — guard against
+                // that invariant breaking instead of panicking.
+                let (a, b) = full_type.split_once('.').ok_or_else(|| {
+                    crate::Error::Other(format!(
+                        "write_full_type: expected a `Package.Name` path, got bare name {full_type:?} \
+                         (a StructType::Game value reached the struct-header write path unexpectedly)"
+                    ))
+                })?;
                 write_node(ar, b, 1)?;
                 write_node(ar, a, 0)?;
                 Ok(())
