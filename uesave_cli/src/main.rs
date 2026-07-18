@@ -5,8 +5,8 @@ use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 
 use uesave::compression::CompressionFormat;
-use uesave::games::palworld::palworld_types;
-use uesave::{Save, SaveReader, StructType, Types};
+use uesave::games::palworld::{palworld_types, Palworld};
+use uesave::{Game, NoGame, Save, SaveReader, StructType, Types};
 
 #[derive(Parser, Debug)]
 struct ActionToJson {
@@ -43,6 +43,10 @@ struct ActionFromJson {
 
     #[arg(short, long, default_value = "-")]
     output: String,
+
+    /// Enable Palworld custom property support (deserialize typed Pal structs)
+    #[arg(long)]
+    palworld: bool,
 
     /// Compress the output with Oodle (Palworld PLM format)
     #[arg(long)]
@@ -106,6 +110,10 @@ struct ActionTestResave {
     ///   -t .EnemiesKilled.Value=Struct
     #[arg(short, long, value_parser = parse_type)]
     r#type: Vec<(String, StructType)>,
+
+    /// Enable Palworld custom property support
+    #[arg(long)]
+    palworld: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -139,132 +147,165 @@ pub fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.action {
-        Action::ToJson(action) => {
-            let mut types = if action.palworld {
-                palworld_types()
+        Action::ToJson(mut action) => {
+            let types = build_types(action.palworld, std::mem::take(&mut action.r#type));
+            if action.palworld {
+                run_to_json::<Palworld>(action, types)?;
             } else {
-                Types::new()
-            };
-            for (path, t) in action.r#type {
-                types.add(path, t);
+                run_to_json::<NoGame>(action, types)?;
             }
-
-            let save = SaveReader::new()
-                .log(!action.no_warn)
-                .error_to_raw(true)
-                .types(types)
-                .read(input(&action.input)?)?;
-            serde_json::to_writer_pretty(output(&action.output)?, &save)?;
         }
         Action::FromJson(io) => {
-            let save: Save = serde_json::from_reader(&mut input(&io.input)?)?;
-            if io.compress_oodle {
-                save.write_compressed(&mut output(&io.output)?, CompressionFormat::Oodle)?;
+            if io.palworld {
+                run_from_json::<Palworld>(io)?;
             } else {
-                save.write(&mut output(&io.output)?)?;
+                run_from_json::<NoGame>(io)?;
             }
         }
-        Action::TestResave(action) => {
-            let mut types = Types::new();
-            for (path, t) in action.r#type {
-                types.add(path, t);
-            }
-
-            let path = std::path::Path::new(&action.path);
-
-            if let Ok(types_file) = fs::read_to_string(path.with_extension("types")) {
-                for t in types_file.lines() {
-                    if let Ok((path, t)) = parse_type(t) {
-                        types.add(path, t);
-                    }
-                }
-            }
-
-            let write_debug = |name: &str, data: &[u8]| -> Result<()> {
-                if action.debug {
-                    fs::write(name, data)?;
-                }
-                Ok(())
-            };
-
-            let input = fs::read(path)?;
-            write_debug("input.sav", &input)?;
-
-            let sr = SaveReader::new()
-                .log(!action.no_warn)
-                .error_to_raw(true)
-                .types(types);
-            let mut reader = Cursor::new(&input);
-            #[cfg(feature = "tracing")]
-            let save = if action.trace {
-                ser_hex::read("trace.json", &mut reader, |r| sr.read(r))?
+        Action::TestResave(mut action) => {
+            let types = build_types(action.palworld, std::mem::take(&mut action.r#type));
+            if action.palworld {
+                run_test_resave::<Palworld>(action, types)?;
             } else {
-                sr.read(&mut reader)?
-            };
-            #[cfg(not(feature = "tracing"))]
-            let save = sr.read(&mut reader)?;
-
-            let mut output = vec![];
-            save.write(&mut output)?;
-            write_debug("output.sav", &output)?;
-            if input != output {
-                return Err(anyhow!("Resave did not match"));
+                run_test_resave::<NoGame>(action, types)?;
             }
-
-            let input_json = serde_json::to_vec_pretty(&save)?;
-            write_debug("input.json", &input_json)?;
-
-            let save_from_json: Save = serde_json::from_slice(&input_json)?;
-            let output_json = serde_json::to_vec_pretty(&save_from_json)?;
-            write_debug("output.json", &output_json)?;
-
-            let mut output = vec![];
-            save_from_json.write(&mut output)?;
-            write_debug("output.sav", &output)?;
-            if input != output {
-                return Err(anyhow!("JSON round trip did not match"));
-            }
-            println!("Resave successful");
         }
-        Action::Edit(action) => {
-            let mut types = if action.palworld {
-                palworld_types()
+        Action::Edit(mut action) => {
+            let types = build_types(action.palworld, std::mem::take(&mut action.r#type));
+            if action.palworld {
+                run_edit::<Palworld>(action, types)?;
             } else {
-                Types::new()
-            };
-            for (path, t) in action.r#type {
-                types.add(path, t);
-            }
-
-            let save = SaveReader::new()
-                .log(!action.no_warn)
-                .error_to_raw(true)
-                .types(types)
-                .read(Cursor::new(fs::read(&action.path)?))?;
-            let modified_save: Save = serde_json::from_slice(&edit::edit_bytes_with_builder(
-                serde_json::to_vec_pretty(&save)?,
-                tempfile::Builder::new().suffix(".json"),
-            )?)?;
-
-            if save == modified_save {
-                println!("File unchanged, doing nothing.");
-            } else {
-                println!("File modified, writing new save.");
-                let mut writer = BufWriter::new(
-                    OpenOptions::new()
-                        .create(true)
-                        .truncate(true)
-                        .write(true)
-                        .open(action.path)?,
-                );
-                if action.compress_oodle {
-                    modified_save.write_compressed(&mut writer, CompressionFormat::Oodle)?;
-                } else {
-                    modified_save.write(&mut writer)?;
-                }
+                run_edit::<NoGame>(action, types)?;
             }
         }
     }
+    Ok(())
+}
+
+/// Build the [`Types`] spec: the Palworld defaults when `palworld` is set, plus
+/// any user-supplied `-t path=Type` overrides.
+fn build_types(palworld: bool, overrides: Vec<(String, StructType)>) -> Types {
+    let mut types = if palworld {
+        palworld_types()
+    } else {
+        Types::new()
+    };
+    for (path, t) in overrides {
+        types.add(path, t);
+    }
+    types
+}
+
+fn run_to_json<G: Game>(action: ActionToJson, types: Types) -> Result<()> {
+    let save: Save<G> = SaveReader::new()
+        .game::<G>()
+        .log(!action.no_warn)
+        .error_to_raw(true)
+        .types(types)
+        .read(input(&action.input)?)?;
+    serde_json::to_writer_pretty(output(&action.output)?, &save)?;
+    Ok(())
+}
+
+fn run_from_json<G: Game>(io: ActionFromJson) -> Result<()> {
+    let save: Save<G> = serde_json::from_reader(&mut input(&io.input)?)?;
+    if io.compress_oodle {
+        save.write_compressed(&mut output(&io.output)?, CompressionFormat::Oodle)?;
+    } else {
+        save.write(&mut output(&io.output)?)?;
+    }
+    Ok(())
+}
+
+fn run_edit<G: Game>(action: ActionEdit, types: Types) -> Result<()> {
+    let save: Save<G> = SaveReader::new()
+        .game::<G>()
+        .log(!action.no_warn)
+        .error_to_raw(true)
+        .types(types)
+        .read(Cursor::new(fs::read(&action.path)?))?;
+    let modified_save: Save<G> = serde_json::from_slice(&edit::edit_bytes_with_builder(
+        serde_json::to_vec_pretty(&save)?,
+        tempfile::Builder::new().suffix(".json"),
+    )?)?;
+
+    if save == modified_save {
+        println!("File unchanged, doing nothing.");
+    } else {
+        println!("File modified, writing new save.");
+        let mut writer = BufWriter::new(
+            OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(action.path)?,
+        );
+        if action.compress_oodle {
+            modified_save.write_compressed(&mut writer, CompressionFormat::Oodle)?;
+        } else {
+            modified_save.write(&mut writer)?;
+        }
+    }
+    Ok(())
+}
+
+fn run_test_resave<G: Game>(action: ActionTestResave, mut types: Types) -> Result<()> {
+    let path = std::path::Path::new(&action.path);
+
+    if let Ok(types_file) = fs::read_to_string(path.with_extension("types")) {
+        for t in types_file.lines() {
+            if let Ok((path, t)) = parse_type(t) {
+                types.add(path, t);
+            }
+        }
+    }
+
+    let write_debug = |name: &str, data: &[u8]| -> Result<()> {
+        if action.debug {
+            fs::write(name, data)?;
+        }
+        Ok(())
+    };
+
+    let input = fs::read(path)?;
+    write_debug("input.sav", &input)?;
+
+    let sr = SaveReader::new()
+        .game::<G>()
+        .log(!action.no_warn)
+        .error_to_raw(true)
+        .types(types);
+    let mut reader = Cursor::new(&input);
+    #[cfg(feature = "tracing")]
+    let save: Save<G> = if action.trace {
+        ser_hex::read("trace.json", &mut reader, |r| sr.read(r))?
+    } else {
+        sr.read(&mut reader)?
+    };
+    #[cfg(not(feature = "tracing"))]
+    let save: Save<G> = sr.read(&mut reader)?;
+
+    let mut output = vec![];
+    save.write(&mut output)?;
+    write_debug("output.sav", &output)?;
+    if input != output {
+        return Err(anyhow!("Resave did not match"));
+    }
+
+    let input_json = serde_json::to_vec_pretty(&save)?;
+    write_debug("input.json", &input_json)?;
+
+    let save_from_json: Save<G> = serde_json::from_slice(&input_json)?;
+    let output_json = serde_json::to_vec_pretty(&save_from_json)?;
+    write_debug("output.json", &output_json)?;
+
+    let mut output = vec![];
+    save_from_json.write(&mut output)?;
+    write_debug("output.sav", &output)?;
+    if input != output {
+        return Err(anyhow!("JSON round trip did not match"));
+    }
+    println!("Resave successful");
     Ok(())
 }
 

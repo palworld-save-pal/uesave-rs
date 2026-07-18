@@ -608,8 +608,11 @@ impl PalMapObjectRecoverOtomoModel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(bound(serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize",
+    deserialize = ""
+))]
 pub struct PalMapObjectHatchingEggModel<T: ArchiveType = SaveGameArchiveType> {
     pub leading_bytes: [u8; 4],
     pub hatched_character_save_parameter: Properties<T>,
@@ -2651,8 +2654,11 @@ static MAP_OBJECT_TO_CONCRETE_MODEL: LazyLock<HashMap<&'static str, &'static str
         m
     });
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(bound(serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize",
+    deserialize = ""
+))]
 pub enum PalMapConcreteModelVariant<T: ArchiveType = SaveGameArchiveType> {
     CharacterTeamMission(PalMapObjectCharacterTeamMissionModel),
     FarmSkillFruits(PalMapObjectFarmSkillFruitsModel),
@@ -2685,8 +2691,11 @@ pub enum PalMapConcreteModelVariant<T: ArchiveType = SaveGameArchiveType> {
     Unknown(BaseModel),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(bound(serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize",
+    deserialize = ""
+))]
 pub struct PalMapConcreteModel<T: ArchiveType = SaveGameArchiveType> {
     pub instance_id: FGuid,
     pub model_instance_id: FGuid,

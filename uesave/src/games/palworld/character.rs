@@ -4,8 +4,11 @@ use crate::{
 use byteorder::ReadBytesExt;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(bound(serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize",
+    deserialize = ""
+))]
 pub struct PalCharacterData<T: ArchiveType = SaveGameArchiveType> {
     pub object: Properties<T>,
     pub unknown_bytes: [u8; 4],

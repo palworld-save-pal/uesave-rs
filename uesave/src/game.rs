@@ -39,8 +39,15 @@ pub trait Game: Clone + PartialEq + std::fmt::Debug + Default + Serialize + 'sta
     ) -> Result<Self::Struct<A::ArchiveType>>;
 
     /// Deserialize a game struct from serde given its type name.
+    ///
+    /// `path` is the property path of the struct being deserialized and
+    /// `schemas` the full schema table; game structs that embed nested
+    /// [`crate::Properties`] use them (via [`ArchiveType::deserialize_properties`])
+    /// to interpret those properties, whose tags were recorded at `{path}.{field}`.
     fn deserialize_struct<'de, D, T: ArchiveType>(
         name: &str,
+        path: &str,
+        schemas: &crate::PropertySchemas,
         d: D,
     ) -> std::result::Result<Self::Struct<T>, D::Error>
     where
@@ -140,6 +147,8 @@ impl Game for NoGame {
     }
     fn deserialize_struct<'de, D, T: ArchiveType>(
         name: &str,
+        _path: &str,
+        _schemas: &crate::PropertySchemas,
         _d: D,
     ) -> std::result::Result<Self::Struct<T>, D::Error>
     where

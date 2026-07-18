@@ -107,12 +107,17 @@ impl Game for Palworld {
 
     /// Deserialize a Palworld struct by name.
     ///
-    /// Note: the schema-threading variants (`PalCharacterData`, `PalDynamicItem`,
-    /// `PalMapConcreteModel`) need the property schemas + path to interpret their
-    /// nested `Properties`, which this by-name entry point does not carry, so they
-    /// are not handled here. The self-describing variants deserialize directly.
+    /// Self-describing variants deserialize directly from `d`. The three
+    /// schema-threading variants (`PalCharacterData`, `PalDynamicItem`,
+    /// `PalMapConcreteModel`) embed nested [`crate::Properties`] whose tags live
+    /// in `schemas` at `{path}.{field}`; deriving their `Deserialize` reaches
+    /// those `Properties` fields, which read the (schemas, path) context this
+    /// installs so [`crate::ArchiveType::deserialize_properties`] can interpret
+    /// them.
     fn deserialize_struct<'de, D, T: crate::ArchiveType>(
         name: &str,
+        path: &str,
+        schemas: &crate::PropertySchemas,
         d: D,
     ) -> std::result::Result<Self::Struct<T>, D::Error>
     where
@@ -120,6 +125,20 @@ impl Game for Palworld {
     {
         use serde::Deserialize;
         Ok(match bare_name(name) {
+            "PalCharacterData" => {
+                let _ctx = crate::serialization::push_properties_ctx(schemas, path);
+                PalStruct::CharacterData(PalCharacterData::<T>::deserialize(d)?)
+            }
+            "PalDynamicItem" => {
+                let _ctx = crate::serialization::push_properties_ctx(schemas, path);
+                PalStruct::DynamicItem(std::boxed::Box::new(PalDynamicItem::<T>::deserialize(d)?))
+            }
+            "PalMapConcreteModel" => {
+                let _ctx = crate::serialization::push_properties_ctx(schemas, path);
+                PalStruct::MapConcreteModel(std::boxed::Box::new(
+                    PalMapConcreteModel::<T>::deserialize(d)?,
+                ))
+            }
             "PalItemContainer" => PalStruct::ItemContainer(PalItemContainer::deserialize(d)?),
             "PalGroupData" => PalStruct::GroupData(PalGroupData::deserialize(d)?),
             "PalBuildProcess" => PalStruct::BuildProcess(PalBuildProcess::deserialize(d)?),
@@ -143,7 +162,7 @@ impl Game for Palworld {
             }
             other => {
                 return Err(serde::de::Error::custom(format!(
-                    "Palworld struct {other:?} cannot be deserialized without schema context"
+                    "unknown Palworld struct type {other:?}"
                 )))
             }
         })

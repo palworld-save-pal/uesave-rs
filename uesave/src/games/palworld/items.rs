@@ -115,16 +115,22 @@ impl PalItemContainerSlot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(bound(serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize",
+    deserialize = ""
+))]
 pub struct PalDynamicItem<T: ArchiveType = SaveGameArchiveType> {
     pub id: PalDynamicId,
     pub static_id: String,
     pub item_type: PalDynamicItemType<T>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(bound(serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "T::ObjectRef: Serialize, T::SoftObjectPath: Serialize",
+    deserialize = ""
+))]
 pub enum PalDynamicItemType<T: ArchiveType = SaveGameArchiveType> {
     Unknown {
         trailer: Vec<u8>,

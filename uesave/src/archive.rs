@@ -35,6 +35,21 @@ pub trait ArchiveType: Clone + PartialEq + std::fmt::Debug + Default + serde::Se
     /// The game this archive type is bound to. Determines which game-specific
     /// struct types and read/write hooks are used.
     type Game: crate::game::Game;
+
+    /// Deserialize a schema-aware [`crate::Properties`] map for this archive
+    /// type. Game structs that embed nested properties (e.g. Palworld's
+    /// `PalCharacterData`) route their `Properties` field through here so the
+    /// property tags recorded at `{path}.{field}` in `schemas` are used to
+    /// interpret the untyped JSON. Dispatched on `Self` so the concrete
+    /// [`crate::Game`] behind `Self::Game` is known.
+    fn deserialize_properties<'de, D>(
+        path: &str,
+        schemas: &crate::PropertySchemas,
+        deserializer: D,
+    ) -> std::result::Result<crate::Properties<Self>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        Self: Sized;
 }
 
 pub trait ArchiveReader: Read + Seek {
@@ -166,6 +181,17 @@ impl<G: crate::game::Game> ArchiveType for SaveGameArchiveType<G> {
 
     fn is_null_object_ref(object_ref: &Self::ObjectRef) -> bool {
         object_ref.is_empty() || object_ref == "None"
+    }
+
+    fn deserialize_properties<'de, D>(
+        path: &str,
+        schemas: &crate::PropertySchemas,
+        deserializer: D,
+    ) -> std::result::Result<crate::Properties<Self>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        crate::serialization::deserialize_properties_seed::<D, G>(path, schemas, deserializer)
     }
 }
 

@@ -1177,3 +1177,285 @@ fn test_palworld_unknown_work_type_falls_back_to_raw_bytes() -> Result<()> {
     }
     Ok(())
 }
+
+/// End-to-end proof that a Palworld save carrying typed embedded structs
+/// round-trips through JSON *deserialization*, the regression this task closes.
+///
+/// Two `RawData` byte-array properties are written to a GVAS save, then read
+/// back with the Palworld game + types so they parse into typed
+/// `StructValue::Game(PalStruct::...)` values (a rich `PalDynamicItem` weapon
+/// and a `PalCharacterData`, both schema-threading variants). The typed save is
+/// serialized to JSON and deserialized back as `Save<Palworld>`; equality (and
+/// byte-exact rewrites) prove the game-aware seed pipeline reconstructs the
+/// typed structs, including `PalCharacterData`'s nested `Properties`.
+#[test]
+fn test_palworld_embedded_struct_json_roundtrip() -> Result<()> {
+    use games::palworld::{PalStruct, Palworld};
+
+    // A real DynamicItemSaveData RawData for a SniperRifle_Default (parses to a
+    // Weapon), and a minimal PalCharacterData blob (empty `object`, i.e. just a
+    // "None" terminator, then the unknown/group_id/trailing fields).
+    let dyn_blob = unhex("00000000000000000000000000000000ef8aa41f4542f82f314924941e5520a214000000536e697065725269666c655f44656661756c7400000000000400000000007a4400000000050000004e6f6e650000000000");
+    let char_blob = unhex("050000004e6f6e650001020304000102030405060708090a0b0c0d0e0f0a0b0c0d");
+
+    // Build a Save<Palworld> whose root holds the two blobs as byte arrays.
+    let byte_tag = PropertyTagPartial {
+        id: None,
+        data: PropertyTagDataPartial::Array(std::boxed::Box::new(PropertyTagDataPartial::Byte(
+            None,
+        ))),
+    };
+    let mut schemas = PropertySchemas::new();
+    schemas.record("DynItem".to_string(), byte_tag.clone());
+    schemas.record("Char".to_string(), byte_tag);
+
+    let mut props = indexmap::IndexMap::new();
+    props.insert(
+        PropertyKey::from("DynItem"),
+        Property::Array(ValueVec::Byte(ByteArray::Byte(dyn_blob))),
+    );
+    props.insert(
+        PropertyKey::from("Char"),
+        Property::Array(ValueVec::Byte(ByteArray::Byte(char_blob))),
+    );
+
+    let s0: Save<Palworld> = Save {
+        header: mock_header(),
+        schemas,
+        root: Root {
+            save_game_type: "TestSave".to_string(),
+            properties: Properties(props),
+        },
+        extra: vec![],
+    };
+
+    let mut bytes = vec![];
+    s0.write(&mut bytes)?;
+
+    // Read the bytes back with the Palworld game and types registered so the
+    // byte arrays parse into typed game structs (error_to_raw off => a parse
+    // failure fails the test rather than degrading to raw bytes).
+    let mut types = Types::new();
+    types.add(
+        "DynItem".to_string(),
+        StructType::Game("PalDynamicItem".to_string()),
+    );
+    types.add(
+        "Char".to_string(),
+        StructType::Game("PalCharacterData".to_string()),
+    );
+
+    let s1: Save<Palworld> = SaveReader::new()
+        .game::<Palworld>()
+        .error_to_raw(false)
+        .types(types)
+        .read(Cursor::new(&bytes))
+        .expect("Palworld save should read back with typed structs");
+
+    // The blobs must have become typed game structs, not stayed raw bytes.
+    assert!(
+        matches!(
+            s1.root.properties.0.get(&PropertyKey::from("DynItem")),
+            Some(Property::Struct(StructValue::Game(PalStruct::DynamicItem(
+                _
+            ))))
+        ),
+        "DynItem should parse into a typed PalDynamicItem"
+    );
+    assert!(
+        matches!(
+            s1.root.properties.0.get(&PropertyKey::from("Char")),
+            Some(Property::Struct(StructValue::Game(
+                PalStruct::CharacterData(_)
+            )))
+        ),
+        "Char should parse into a typed PalCharacterData"
+    );
+
+    // The crux: serialize the typed save to JSON and deserialize it back.
+    let json = serde_json::to_string(&s1).unwrap();
+    let s2: Save<Palworld> = serde_json::from_str(&json).unwrap();
+    assert_eq!(s1, s2, "Palworld save must survive a JSON round trip");
+
+    // And both must rewrite to the exact original bytes.
+    let mut b2 = vec![];
+    s2.write(&mut b2)?;
+    assert_eq!(
+        bytes, b2,
+        "JSON-roundtripped save must rewrite byte-for-byte"
+    );
+
+    Ok(())
+}
+
+/// [`test_palworld_embedded_struct_json_roundtrip`] only exercises an *empty*
+/// `PalCharacterData.object`, so it never proves the schema-threading path
+/// (thread-local ctx -> `deserialize_properties` -> `PropertiesSeed` schema
+/// lookup at `{path}.{prop}`) actually reconstructs a populated nested
+/// `Properties`. This test closes that gap: `object` carries a real property,
+/// so a successful round trip proves the nested `Properties` were rebuilt
+/// from schema-tagged JSON, not just an empty map that happens to compare
+/// equal either way.
+///
+/// (This does not additionally exercise `GameStructOrBytesSeed::visit_seq`,
+/// the "entry stayed raw bytes" fallback branch -- see the note at the end of
+/// the test for why that turns out not to be reachable through the JSON
+/// pipeline as currently implemented.)
+#[test]
+fn test_palworld_embedded_struct_json_roundtrip_populated_properties() -> Result<()> {
+    use games::palworld::{PalCharacterData, PalStruct, Palworld};
+
+    // Build a real (non-empty) PalCharacterData payload: `object` carries one
+    // Int property, so its nested Properties are provably reconstructed, not
+    // just an empty map. This is generated through the crate's own
+    // read/write code (not hand-typed hex): only a scratch schema table is
+    // needed so `write_property` can find a tag for "Level" while writing
+    // this standalone blob.
+    let mut char_write_schemas = PropertySchemas::new();
+    char_write_schemas.record(
+        "Level".to_string(),
+        PropertyTagPartial {
+            id: None,
+            data: PropertyTagDataPartial::Other(PropertyType::IntProperty),
+        },
+    );
+    let char_data = PalCharacterData::<SaveGameArchiveType<NoGame>> {
+        object: Properties(indexmap::IndexMap::from([(
+            PropertyKey::from("Level"),
+            Property::Int(42),
+        )])),
+        unknown_bytes: [1, 2, 3, 4],
+        group_id: FGuid::parse_str("2eb5fdbd4d1001ac8ff33681daa59333")?,
+        trailing_bytes: [5, 6, 7, 8],
+    };
+    let mut char_blob = vec![];
+    run(&mut Cursor::new(&mut char_blob), |writer| {
+        *writer.schemas.borrow_mut() = char_write_schemas.clone();
+        char_data.write(writer)
+    })?;
+
+    // Build a Save<Palworld> whose root holds the blob as a byte array, same
+    // shape as test_palworld_embedded_struct_json_roundtrip.
+    let byte_tag = PropertyTagPartial {
+        id: None,
+        data: PropertyTagDataPartial::Array(std::boxed::Box::new(PropertyTagDataPartial::Byte(
+            None,
+        ))),
+    };
+    let mut schemas = PropertySchemas::new();
+    schemas.record("Char".to_string(), byte_tag);
+
+    let mut props = indexmap::IndexMap::new();
+    props.insert(
+        PropertyKey::from("Char"),
+        Property::Array(ValueVec::Byte(ByteArray::Byte(char_blob))),
+    );
+
+    let s0: Save<Palworld> = Save {
+        header: mock_header(),
+        schemas,
+        root: Root {
+            save_game_type: "TestSave".to_string(),
+            properties: Properties(props),
+        },
+        extra: vec![],
+    };
+
+    let mut bytes = vec![];
+    s0.write(&mut bytes)?;
+
+    // Read the bytes back with the Palworld game and types registered so the
+    // byte array parses into a typed PalCharacterData.
+    let mut types = Types::new();
+    types.add(
+        "Char".to_string(),
+        StructType::Game("PalCharacterData".to_string()),
+    );
+
+    let s1: Save<Palworld> = SaveReader::new()
+        .game::<Palworld>()
+        .error_to_raw(false)
+        .types(types)
+        .read(Cursor::new(&bytes))
+        .expect("Palworld save should read back with a typed struct");
+
+    // The struct must be typed, and its nested `object` Properties non-empty.
+    match s1.root.properties.0.get(&PropertyKey::from("Char")) {
+        Some(Property::Struct(StructValue::Game(PalStruct::CharacterData(data)))) => {
+            assert_eq!(
+                Some(&Property::Int(42)),
+                data.object.0.get(&PropertyKey::from("Level")),
+                "nested object Properties must have been reconstructed, not left empty"
+            );
+        }
+        other => panic!("Char should parse into a typed PalCharacterData, got {other:?}"),
+    }
+
+    // The crux: serialize the typed save to JSON and deserialize it back.
+    // Reconstructing `s1` from JSON exercises `PalCharacterData`'s
+    // `Deserialize` impl, which reads `object` through the thread-local
+    // (schemas, path) context installed by `Game::deserialize_struct` and
+    // looks its properties up at "Char.Level" -- proving the schema-threading
+    // path, not just an empty-map equality check.
+    let json = serde_json::to_string(&s1).unwrap();
+    let s2: Save<Palworld> = serde_json::from_str(&json).unwrap();
+    assert_eq!(s1, s2, "Palworld save must survive a JSON round trip");
+
+    // And both must rewrite to the exact original bytes.
+    let mut b2 = vec![];
+    s2.write(&mut b2)?;
+    assert_eq!(
+        bytes, b2,
+        "JSON-roundtripped save must rewrite byte-for-byte"
+    );
+
+    Ok(())
+}
+
+/// A game-struct-typed property (`StructType::Game` schema) whose value stayed
+/// an empty/unparsed byte array must round-trip through JSON as a byte array.
+/// Real saves share one schema path across many map entries (e.g. every
+/// `worldSaveData.MapObjectSaveData.Model.Connector.RawData` shares one
+/// `PalConnector` schema), so an entry that stayed raw serializes as
+/// `{"Byte": []}` -- a JSON *map* -- under a `Game` schema. It must be read back
+/// as a byte array, not (mis)parsed as the typed struct.
+#[test]
+fn test_palworld_empty_game_struct_bytes_json_roundtrip() -> Result<()> {
+    use games::palworld::Palworld;
+
+    let game_tag = PropertyTagPartial {
+        id: None,
+        data: PropertyTagDataPartial::Struct {
+            struct_type: StructType::Game("PalConnector".to_string()),
+            id: FGuid::default(),
+        },
+    };
+    let mut schemas = PropertySchemas::new();
+    schemas.record("Conn".to_string(), game_tag);
+
+    let mut props = indexmap::IndexMap::new();
+    props.insert(
+        PropertyKey::from("Conn"),
+        Property::Array(ValueVec::Byte(ByteArray::Byte(vec![]))),
+    );
+
+    let s0: Save<Palworld> = Save {
+        header: mock_header(),
+        schemas,
+        root: Root {
+            save_game_type: "TestSave".to_string(),
+            properties: Properties(props),
+        },
+        extra: vec![],
+    };
+
+    let json = serde_json::to_string(&s0).unwrap();
+    let s2: Save<Palworld> = serde_json::from_str(&json)
+        .expect("empty game-struct byte array must deserialize as a byte array");
+    assert_eq!(
+        s0, s2,
+        "empty game-struct payload must survive a JSON round trip as bytes"
+    );
+
+    Ok(())
+}
