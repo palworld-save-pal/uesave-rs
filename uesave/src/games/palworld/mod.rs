@@ -468,6 +468,7 @@ pub fn palworld_types() -> Types {
         "worldSaveData.SupplySaveData.SupplyInfos.Value",
         "worldSaveData.GuildExtraSaveDataMap.Value",
         "SaveData.Local_MaxFriendshipPalIds.Value",
+        "SaveData.Local_MaxFriendshipPalIds.Key",
         "worldSaveData.MapObjectSpawnerInStageSaveData.SpawnerDataMapByLevelObjectInstanceId.Value",
         "worldSaveData.MapObjectSpawnerInStageSaveData.SpawnerDataMapByLevelObjectInstanceId.ItemMap.Value",
         "worldSaveData.DungeonSaveData.RewardSaveDataMap.Value",
@@ -493,7 +494,6 @@ pub fn palworld_types() -> Types {
         "worldSaveData.InvaderSaveData.Key",
         "worldSaveData.SupplySaveData.SupplyInfos.Key",
         "worldSaveData.GuildExtraSaveDataMap.Key",
-        "SaveData.Local_MaxFriendshipPalIds.Key",
         "worldSaveData.MapObjectSpawnerInStageSaveData.SpawnerDataMapByLevelObjectInstanceId.Key",
         "worldSaveData.DungeonSaveData.RewardSaveDataMap.Key",
     ];
