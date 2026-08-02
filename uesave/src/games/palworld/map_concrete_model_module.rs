@@ -12,7 +12,7 @@ impl PalModuleSlotIndexes {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
         let attribute = ar.read_u8()?;
         let indexes_count = ar.read_u32::<LE>()?;
-        let mut indexes = Vec::with_capacity(indexes_count as usize);
+        let mut indexes = Vec::with_capacity(crate::bounded_prealloc(indexes_count as usize));
         for _ in 0..indexes_count {
             indexes.push(ar.read_i32::<LE>()?);
         }
@@ -194,12 +194,14 @@ impl PalMapConcreteModelModule {
                     "EPalMapObjectConcreteModelModuleType::ItemContainer" => {
                         let target_container_id = FGuid::read(byte_reader)?;
                         let slot_count = byte_reader.read_u32::<LE>()?;
-                        let mut slot_attribute_indexes = Vec::with_capacity(slot_count as usize);
+                        let mut slot_attribute_indexes =
+                            Vec::with_capacity(crate::bounded_prealloc(slot_count as usize));
                         for _ in 0..slot_count {
                             slot_attribute_indexes.push(PalModuleSlotIndexes::read(byte_reader)?);
                         }
                         let all_slot_count = byte_reader.read_u32::<LE>()?;
-                        let mut all_slot_attribute = Vec::with_capacity(all_slot_count as usize);
+                        let mut all_slot_attribute =
+                            Vec::with_capacity(crate::bounded_prealloc(all_slot_count as usize));
                         for _ in 0..all_slot_count {
                             all_slot_attribute.push(byte_reader.read_u8()?);
                         }
@@ -248,7 +250,8 @@ impl PalMapConcreteModelModule {
                         let lock_state = byte_reader.read_u8()?;
                         let password = byte_reader.read_string()?;
                         let player_count = byte_reader.read_u32::<LE>()?;
-                        let mut player_infos = Vec::with_capacity(player_count as usize);
+                        let mut player_infos =
+                            Vec::with_capacity(crate::bounded_prealloc(player_count as usize));
                         for _ in 0..player_count {
                             player_infos.push(PalPlayerLockInfo::read(byte_reader)?);
                         }
@@ -272,7 +275,8 @@ impl PalMapConcreteModelModule {
                     }
                     "EPalMapObjectConcreteModelModuleType::GuildSecurity" => {
                         let role_count = byte_reader.read_u32::<LE>()?;
-                        let mut allowed_roles = Vec::with_capacity(role_count as usize);
+                        let mut allowed_roles =
+                            Vec::with_capacity(crate::bounded_prealloc(role_count as usize));
                         for _ in 0..role_count {
                             allowed_roles.push(byte_reader.read_u8()?);
                         }

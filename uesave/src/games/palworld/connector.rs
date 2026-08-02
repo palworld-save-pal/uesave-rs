@@ -41,7 +41,7 @@ impl PalConnector {
         let connect_index = ar.read_u8()?;
 
         let any_place_count = ar.read_u32::<LE>()?;
-        let mut any_place = Vec::with_capacity(any_place_count as usize);
+        let mut any_place = Vec::with_capacity(crate::bounded_prealloc(any_place_count as usize));
 
         for _ in 0..any_place_count {
             any_place.push(PalConnectInfoItem::read(ar)?);

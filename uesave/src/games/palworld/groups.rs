@@ -76,7 +76,8 @@ impl PalGuildRolePermission {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
         let role = ar.read_u8()?;
         let permission_count = ar.read_u32::<LE>()?;
-        let mut permissions = Vec::with_capacity(permission_count as usize);
+        let mut permissions =
+            Vec::with_capacity(crate::bounded_prealloc(permission_count as usize));
         for _ in 0..permission_count {
             permissions.push(ar.read_u8()?);
         }
@@ -136,7 +137,8 @@ pub struct PalGuildTailPostUpdate {
 impl PalGuildTailPostUpdate {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
         let chest_role_count = ar.read_u32::<LE>()?;
-        let mut guild_chest_allowed_roles = Vec::with_capacity(chest_role_count as usize);
+        let mut guild_chest_allowed_roles =
+            Vec::with_capacity(crate::bounded_prealloc(chest_role_count as usize));
         for _ in 0..chest_role_count {
             guild_chest_allowed_roles.push(ar.read_u8()?);
         }

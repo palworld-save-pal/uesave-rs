@@ -535,7 +535,7 @@ pub struct PalMapObjectShippingItemModel {
 }
 
 fn read_int_array<A: ArchiveReader>(count: u32, ar: &mut A) -> Result<Vec<i32>> {
-    let mut vec = Vec::with_capacity(count as usize);
+    let mut vec = Vec::with_capacity(crate::bounded_prealloc(count as usize));
     for _ in 0..count {
         vec.push(ar.read_i32::<LE>()?);
     }

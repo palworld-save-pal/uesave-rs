@@ -32,7 +32,8 @@ pub struct PalGuildLab {
 impl PalGuildLab {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
         let research_count = ar.read_u32::<LE>()?;
-        let mut research_info = Vec::with_capacity(research_count as usize);
+        let mut research_info =
+            Vec::with_capacity(crate::bounded_prealloc(research_count as usize));
         for _ in 0..research_count {
             research_info.push(PalLabResearchInfo::read(ar)?);
         }

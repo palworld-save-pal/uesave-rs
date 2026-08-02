@@ -20,19 +20,20 @@ pub struct PalItemContainerPermission {
 impl PalItemContainer {
     pub fn read<A: ArchiveReader>(ar: &mut A) -> Result<Self> {
         let type_a_count = ar.read_u32::<LE>()?;
-        let mut type_a = Vec::with_capacity(type_a_count as usize);
+        let mut type_a = Vec::with_capacity(crate::bounded_prealloc(type_a_count as usize));
         for _ in 0..type_a_count {
             type_a.push(ar.read_u8()?);
         }
 
         let type_b_count = ar.read_u32::<LE>()?;
-        let mut type_b = Vec::with_capacity(type_b_count as usize);
+        let mut type_b = Vec::with_capacity(crate::bounded_prealloc(type_b_count as usize));
         for _ in 0..type_b_count {
             type_b.push(ar.read_u8()?);
         }
 
         let item_static_ids_count = ar.read_u32::<LE>()?;
-        let mut item_static_ids = Vec::with_capacity(item_static_ids_count as usize);
+        let mut item_static_ids =
+            Vec::with_capacity(crate::bounded_prealloc(item_static_ids_count as usize));
         for _ in 0..item_static_ids_count {
             item_static_ids.push(ar.read_string()?);
         }
@@ -296,7 +297,7 @@ fn try_parse_weapon<T: ArchiveType, A: ArchiveReader<ArchiveType = T>>(
     let remaining_bullets = ar.read_i32::<LE>()?;
 
     let skill_count = ar.read_u32::<LE>()?;
-    let mut passive_skill_list = Vec::with_capacity(skill_count as usize);
+    let mut passive_skill_list = Vec::with_capacity(crate::bounded_prealloc(skill_count as usize));
     for _ in 0..skill_count {
         passive_skill_list.push(ar.read_string()?);
     }

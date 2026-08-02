@@ -523,12 +523,45 @@ fn write_property<T: ArchiveType, A: ArchiveWriter<ArchiveType = T>>(
     result
 }
 
+/// Upper bound on capacity pre-reserved from a length read out of the stream.
+/// A corrupt or speculatively-misread count must not reach `Vec::with_capacity`
+/// unchecked: on 32-bit targets (wasm32) a capacity past `isize::MAX` (~2 GB) is
+/// an uncatchable `capacity overflow` panic rather than a recoverable error. The
+/// vec still grows as elements are read, so a garbage length now fails with a
+/// read error instead of aborting the whole parse.
+pub(crate) const UNTRUSTED_PREALLOC_CAP: usize = 4096;
+
+pub(crate) fn bounded_prealloc(count: usize) -> usize {
+    count.min(UNTRUSTED_PREALLOC_CAP)
+}
+
+#[cfg(test)]
+mod bounded_prealloc_tests {
+    use super::{bounded_prealloc, UNTRUSTED_PREALLOC_CAP};
+
+    #[test]
+    fn caps_untrusted_length_but_keeps_small_ones() {
+        assert_eq!(bounded_prealloc(0), 0);
+        assert_eq!(bounded_prealloc(10), 10);
+        assert_eq!(
+            bounded_prealloc(UNTRUSTED_PREALLOC_CAP),
+            UNTRUSTED_PREALLOC_CAP
+        );
+        // A garbage count never reaches with_capacity unchecked.
+        assert_eq!(bounded_prealloc(u32::MAX as usize), UNTRUSTED_PREALLOC_CAP);
+    }
+}
+
 #[cfg_attr(feature = "tracing", instrument(skip_all))]
 fn read_array<T, F, A: ArchiveReader>(length: u32, ar: &mut A, f: F) -> Result<Vec<T>>
 where
     F: Fn(&mut A) -> Result<T>,
 {
-    (0..length).map(|_| f(ar)).collect()
+    let mut out = Vec::with_capacity(bounded_prealloc(length as usize));
+    for _ in 0..length {
+        out.push(f(ar)?);
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -2306,7 +2339,7 @@ impl FMovieSceneFloatChannel {
             )));
         }
         let times_count = ar.read_i32::<LE>()? as usize;
-        let mut times = Vec::with_capacity(times_count);
+        let mut times = Vec::with_capacity(bounded_prealloc(times_count));
         for _ in 0..times_count {
             times.push(ar.read_i32::<LE>()?);
         }
@@ -2318,7 +2351,7 @@ impl FMovieSceneFloatChannel {
             )));
         }
         let values_count = ar.read_i32::<LE>()? as usize;
-        let mut values = Vec::with_capacity(values_count);
+        let mut values = Vec::with_capacity(bounded_prealloc(values_count));
         for _ in 0..values_count {
             let value = ar.read_f32::<LE>()?.into();
             let arrive_tangent = ar.read_f32::<LE>()?.into();
