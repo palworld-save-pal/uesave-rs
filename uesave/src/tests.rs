@@ -1337,9 +1337,9 @@ fn test_palworld_embedded_struct_json_roundtrip_populated_properties() -> Result
             PropertyKey::from("Level"),
             Property::Int(42),
         )])),
-        unknown_bytes: [1, 2, 3, 4],
+        unknown_bytes: Some([1, 2, 3, 4]),
         group_id: FGuid::parse_str("2eb5fdbd4d1001ac8ff33681daa59333")?,
-        trailing_bytes: [5, 6, 7, 8],
+        trailing_bytes: Some([5, 6, 7, 8]),
     };
     let mut char_blob = vec![];
     run(&mut Cursor::new(&mut char_blob), |writer| {

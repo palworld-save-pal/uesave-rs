@@ -3,6 +3,7 @@ use crate::{
 };
 use byteorder::ReadBytesExt;
 use serde::{Deserialize, Serialize};
+use std::io::SeekFrom;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(bound(
@@ -11,33 +12,66 @@ use serde::{Deserialize, Serialize};
 ))]
 pub struct PalCharacterData<T: ArchiveType = SaveGameArchiveType> {
     pub object: Properties<T>,
-    pub unknown_bytes: [u8; 4],
+    /// Present in saves written by older Palworld versions; absent (`None`)
+    /// in newer ones, which write only [`group_id`](Self::group_id). Detected
+    /// at read time from how many bytes remain in this entry's embedded byte
+    /// range — see [`Self::read`].
+    pub unknown_bytes: Option<[u8; 4]>,
     pub group_id: FGuid,
-    pub trailing_bytes: [u8; 4],
+    /// Sibling of [`unknown_bytes`](Self::unknown_bytes): present together,
+    /// absent together.
+    pub trailing_bytes: Option<[u8; 4]>,
 }
 
 impl<T: ArchiveType> PalCharacterData<T> {
     pub fn read<A: ArchiveReader<ArchiveType = T>>(ar: &mut A) -> Result<Self> {
+        let object = crate::read_properties_until_none(ar)?;
+
+        // The trailer after the property list is 24 bytes (4 unknown + a
+        // 16-byte group GUID + 4 more unknown) in saves from older Palworld
+        // versions, and just the bare 16-byte GUID in newer ones — the two
+        // 4-byte fields were dropped at some point. `PalCharacterData::read`
+        // is always called on a byte range scoped to exactly this entry (the
+        // caller hands it a fresh `Cursor` over the entry's own bytes), so
+        // seeking to the end and back tells us which layout this entry uses
+        // without consuming anything.
+        let pos = ar.stream_position()?;
+        let end = ar.seek(SeekFrom::End(0))?;
+        ar.seek(SeekFrom::Start(pos))?;
+        let has_legacy_padding = end.saturating_sub(pos) >= 24;
+
+        let unknown_bytes = if has_legacy_padding {
+            let mut bytes = [0; 4];
+            ar.read_exact(&mut bytes)?;
+            Some(bytes)
+        } else {
+            None
+        };
+        let group_id = FGuid::read(ar)?;
+        let trailing_bytes = if has_legacy_padding {
+            let mut bytes = [0; 4];
+            ar.read_exact(&mut bytes)?;
+            Some(bytes)
+        } else {
+            None
+        };
+
         Ok(PalCharacterData {
-            object: crate::read_properties_until_none(ar)?,
-            unknown_bytes: {
-                let mut bytes = [0; 4];
-                ar.read_exact(&mut bytes)?;
-                bytes
-            },
-            group_id: FGuid::read(ar)?,
-            trailing_bytes: {
-                let mut bytes = [0; 4];
-                ar.read_exact(&mut bytes)?;
-                bytes
-            },
+            object,
+            unknown_bytes,
+            group_id,
+            trailing_bytes,
         })
     }
     pub fn write<A: ArchiveWriter<ArchiveType = T>>(&self, ar: &mut A) -> Result<()> {
         crate::write_properties_none_terminated(ar, &self.object)?;
-        ar.write_all(&self.unknown_bytes)?;
+        if let Some(bytes) = &self.unknown_bytes {
+            ar.write_all(bytes)?;
+        }
         self.group_id.write(ar)?;
-        ar.write_all(&self.trailing_bytes)?;
+        if let Some(bytes) = &self.trailing_bytes {
+            ar.write_all(bytes)?;
+        }
         Ok(())
     }
 }
